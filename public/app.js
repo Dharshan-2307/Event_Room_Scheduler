@@ -26,6 +26,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
       ).join('\n');
       loadRooms();
       loadTimetables();
+      loadSlots();
     } else showMsg(msg, json.error, 'error');
   } catch (e) { showMsg(msg, 'Upload failed: ' + e.message, 'error'); }
 });
@@ -67,12 +68,15 @@ async function deleteTimetable(id) {
 // ── Find Free Rooms ──
 async function loadSlots() {
   const data = await (await fetch(API + '/api/slots')).json();
-  document.getElementById('findDay').innerHTML = data.days.length
-    ? data.days.map(d => `<option value="${d}">${d}</option>`).join('')
-    : '<option value="">No days — upload timetables first</option>';
-  document.getElementById('findTime').innerHTML = data.time_slots.length
-    ? data.time_slots.map(t => `<option value="${t}">${t}</option>`).join('')
-    : '<option value="">No slots found</option>';
+  const daySelect = document.getElementById('findDay');
+  const timeSelect = document.getElementById('findTime');
+  if (data.days.length) {
+    daySelect.innerHTML = data.days.map(d => `<option value="${d}">${d}</option>`).join('');
+    timeSelect.innerHTML = data.time_slots.map(t => `<option value="${t}">${t}</option>`).join('');
+  } else {
+    daySelect.innerHTML = '<option value="">No data yet — upload a timetable</option>';
+    timeSelect.innerHTML = '<option value="">—</option>';
+  }
 }
 async function findFreeRooms() {
   const day = document.getElementById('findDay').value;
@@ -91,3 +95,4 @@ async function findFreeRooms() {
 
 loadRooms();
 loadTimetables();
+loadSlots();

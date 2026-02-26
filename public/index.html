@@ -58,17 +58,14 @@
       <p class="hint">Select a day and time slot to see available rooms for your event.</p>
       <div class="row">
         <label>Day:
-          <select id="findDay"><option value="">-- Load slots first --</option></select>
+          <select id="findDay"></select>
         </label>
         <label>Time Slot:
-          <select id="findTime"><option value="">-- Load slots first --</option></select>
+          <select id="findTime"></select>
         </label>
       </div>
-      <button onclick="loadSlots()">Load Slots</button>
       <button onclick="findFreeRooms()">Search Free Rooms</button>
-      <div id="freeResults" style="margin-top:1rem">
-        <p class="hint">Upload a timetable first, then search here.</p>
-      </div>
+      <div id="freeResults" style="margin-top:1rem"></div>
     </div>
   </main>
 
