@@ -131,6 +131,17 @@ app.post('/api/timetables', upload.single('pdf'), async (req, res) => {
     const result = insertTimetable.run(department, year, req.file.originalname, req.file.path, rawText);
     const timetableId = result.lastInsertRowid;
 
+    // Auto-extract rooms from timetable PDF
+    const rooms = parseRoomsPdf(rawText);
+    let roomCount = 0;
+    db.transaction(() => {
+      for (const r of rooms) {
+        const res = insertRoom.run(r.room_number, r.building, r.capacity, r.room_type);
+        if (res.changes) roomCount++;
+      }
+    })();
+    console.log(`Auto-extracted ${roomCount} new rooms from timetable`);
+
     const entries = parseTimetableText(rawText);
     db.transaction(() => {
       for (const e of entries) {
@@ -138,7 +149,7 @@ app.post('/api/timetables', upload.single('pdf'), async (req, res) => {
       }
     })();
 
-    return res.json({ message: 'Timetable uploaded', timetable_id: Number(timetableId), entries_found: entries.length, raw_text: rawText });
+    return res.json({ message: `Timetable uploaded. ${entries.length} schedule entries, ${roomCount} new rooms extracted.`, timetable_id: Number(timetableId), entries_found: entries.length, rooms_added: roomCount, raw_text: rawText });
   } catch (err) {
     console.error('Timetable upload error:', err);
     return res.status(500).json({ error: 'Failed: ' + err.message });
