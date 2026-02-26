@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>College Room Scheduler</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🏫 College Room Scheduler</h1>
+    <p>Upload PDFs for rooms & timetables, find free slots for events</p>
+  </header>
+
+  <main>
+    <!-- Upload Rooms PDF -->
+    <div class="card">
+      <h2>Upload Rooms PDF</h2>
+      <p class="hint">Upload a PDF containing room numbers, buildings, capacity etc.</p>
+      <form id="roomUploadForm">
+        <label>Rooms PDF: <input type="file" id="roomPdf" accept=".pdf" required></label>
+        <button type="submit">Upload & Extract Rooms</button>
+      </form>
+      <p id="roomMsg" class="msg"></p>
+      <div id="roomPreview" class="preview"></div>
+    </div>
+
+    <!-- Upload Timetable PDF -->
+    <div class="card">
+      <h2>Upload Timetable PDF</h2>
+      <p class="hint">Upload a department timetable PDF. Repeat for each department/year.</p>
+      <form id="uploadForm">
+        <label>Department: <input type="text" id="dept" required placeholder="e.g. CSE"></label>
+        <label>Year: <input type="text" id="year" required placeholder="e.g. 2nd Year"></label>
+        <label>Timetable PDF: <input type="file" id="pdfFile" accept=".pdf" required></label>
+        <button type="submit">Upload & Parse</button>
+      </form>
+      <p id="uploadMsg" class="msg"></p>
+      <div id="parsedPreview" class="preview"></div>
+    </div>
+
+    <!-- All Rooms -->
+    <div class="card">
+      <h2>All Rooms</h2>
+      <button onclick="loadRooms()">Refresh</button>
+      <table id="roomsTable">
+        <thead><tr><th>Room</th><th>Building</th><th>Capacity</th><th>Type</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Uploaded Timetables -->
+    <div class="card">
+      <h2>Uploaded Timetables</h2>
+      <button onclick="loadTimetables()">Refresh</button>
+      <table id="ttTable">
+        <thead><tr><th>ID</th><th>Dept</th><th>Year</th><th>File</th><th>Uploaded</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card" id="scheduleCard" style="display:none">
+      <h2>Schedule Entries</h2>
+      <table id="scheduleTable">
+        <thead><tr><th>Day</th><th>Time</th><th>Room</th><th>Subject</th><th>Faculty</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Add Manual Entry -->
+    <div class="card">
+      <h2>Add Schedule Entry Manually</h2>
+      <p class="hint">If the parser missed something, add entries by hand.</p>
+      <form id="manualForm">
+        <label>Timetable ID: <input type="number" id="manualTtId" required></label>
+        <label>Day: <input type="text" id="manualDay" required placeholder="Monday"></label>
+        <label>Time Slot: <input type="text" id="manualTime" required placeholder="9:00-10:00"></label>
+        <label>Room Number: <input type="text" id="manualRoom" required placeholder="101"></label>
+        <label>Subject: <input type="text" id="manualSubject" placeholder="Math"></label>
+        <label>Faculty: <input type="text" id="manualFaculty" placeholder="Dr. Smith"></label>
+        <button type="submit">Add Entry</button>
+      </form>
+      <p id="manualMsg" class="msg"></p>
+    </div>
+
+    <!-- Find Free Rooms -->
+    <div class="card highlight">
+      <h2>🔍 Find Free Rooms</h2>
+      <p class="hint">Select a day and time slot to see which rooms are available for your event.</p>
+      <div class="row">
+        <label>Day:
+          <select id="findDay"><option value="">-- Load slots first --</option></select>
+        </label>
+        <label>Time Slot:
+          <select id="findTime"><option value="">-- Load slots first --</option></select>
+        </label>
+      </div>
+      <button onclick="loadSlots()">Load Available Slots</button>
+      <button onclick="findFreeRooms()">Search Free Rooms</button>
+      <div id="freeResults" style="margin-top:1rem">
+        <p class="hint">Upload rooms & timetables first, then search here.</p>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

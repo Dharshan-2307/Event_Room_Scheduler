@@ -1,0 +1,130 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Segoe UI', sans-serif;
+  background: #f0f2f5;
+  color: #333;
+  min-height: 100vh;
+}
+
+header {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  text-align: center;
+  padding: 2rem 1rem;
+}
+header h1 { font-size: 1.8rem; }
+header p { opacity: 0.85; margin-top: 0.3rem; }
+
+main { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem 3rem; }
+
+.row { display: flex; gap: 1rem; flex-wrap: wrap; }
+.row label { flex: 1; min-width: 200px; }
+
+.highlight {
+  border: 2px solid #667eea;
+  background: linear-gradient(135deg, #f8f9ff, #fff);
+}
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 1.5rem;
+  margin-bottom: 1.2rem;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+.card h2 { margin-bottom: 0.5rem; font-size: 1.2rem; color: #444; }
+.card h3 { margin-bottom: 0.8rem; color: #555; }
+.hint { font-size: 0.85rem; color: #888; margin-bottom: 1rem; }
+
+textarea {
+  width: 100%;
+  padding: 0.7rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 0.9rem;
+  resize: vertical;
+  margin-bottom: 0.8rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.7rem;
+  font-weight: 500;
+}
+label input, label select {
+  display: block;
+  width: 100%;
+  margin-top: 0.3rem;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+button {
+  background: #667eea;
+  color: white;
+  border: none;
+  padding: 0.6rem 1.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+  transition: background 0.2s;
+}
+button:hover { background: #5a6fd6; }
+button.danger { background: #e74c3c; }
+button.danger:hover { background: #c0392b; }
+button.secondary { background: #95a5a6; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.8rem;
+}
+th, td {
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+  font-size: 0.9rem;
+}
+th { background: #f8f9fa; font-weight: 600; color: #555; }
+
+.msg {
+  margin-top: 0.6rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+.msg.success { background: #d4edda; color: #155724; }
+.msg.error { background: #f8d7da; color: #721c24; }
+
+.preview {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow-y: auto;
+  display: none;
+}
+
+.room-card {
+  display: inline-block;
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+  border-radius: 8px;
+  padding: 0.8rem 1.2rem;
+  margin: 0.4rem;
+  text-align: center;
+}
+.room-card .room-num { font-size: 1.2rem; font-weight: 700; color: #155724; }
+.room-card .room-info { font-size: 0.8rem; color: #555; margin-top: 0.2rem; }
+
+#freeResults { min-height: 60px; }

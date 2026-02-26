@@ -1,0 +1,6 @@
+node_modules/
+uploads/
+scheduler.db
+scheduler.db-shm
+scheduler.db-wal
+.vscode/
