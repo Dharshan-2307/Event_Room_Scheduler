@@ -32,17 +32,16 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_number TEXT UNIQUE NOT NULL,
-    building TEXT,
-    capacity INTEGER,
     room_type TEXT DEFAULT 'classroom'
   );
   CREATE TABLE IF NOT EXISTS timetables (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     department TEXT NOT NULL,
-    year TEXT NOT NULL,
+    year_sem TEXT NOT NULL,
+    section TEXT,
+    default_room TEXT,
     filename TEXT NOT NULL,
     filepath TEXT NOT NULL,
-    raw_text TEXT,
     uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS schedules (
@@ -52,26 +51,20 @@ db.exec(`
     time_slot TEXT NOT NULL,
     room_number TEXT NOT NULL,
     subject TEXT,
-    faculty TEXT,
     FOREIGN KEY (timetable_id) REFERENCES timetables(id) ON DELETE CASCADE
-  );
-  CREATE TABLE IF NOT EXISTS room_uploads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename TEXT NOT NULL,
-    filepath TEXT NOT NULL,
-    raw_text TEXT,
-    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
-const insertRoom = db.prepare('INSERT OR IGNORE INTO rooms (room_number, building, capacity, room_type) VALUES (?, ?, ?, ?)');
-const insertTimetable = db.prepare('INSERT INTO timetables (department, year, filename, filepath, raw_text) VALUES (?, ?, ?, ?, ?)');
-const insertSchedule = db.prepare('INSERT INTO schedules (timetable_id, day, time_slot, room_number, subject, faculty) VALUES (?, ?, ?, ?, ?, ?)');
+const insertRoom = db.prepare('INSERT OR IGNORE INTO rooms (room_number, room_type) VALUES (?, ?)');
+const insertTimetable = db.prepare('INSERT INTO timetables (department, year_sem, section, default_room, filename, filepath) VALUES (?, ?, ?, ?, ?, ?)');
+const insertSchedule = db.prepare('INSERT INTO schedules (timetable_id, day, time_slot, room_number, subject) VALUES (?, ?, ?, ?, ?)');
 
-// ── Upload Rooms PDF ──
-app.post('/api/rooms/upload', upload.single('pdf'), async (req, res) => {
+// ── Upload PDF (single endpoint) ──
+app.post('/api/upload', upload.single('pdf'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
+
+    console.log('Processing:', req.file.originalname, 'size:', req.file.size);
 
     let rawText = '';
     try {
@@ -83,22 +76,43 @@ app.post('/api/rooms/upload', upload.single('pdf'), async (req, res) => {
       return res.status(400).json({ error: 'Could not read PDF: ' + pdfErr.message });
     }
 
-    db.prepare('INSERT INTO room_uploads (filename, filepath, raw_text) VALUES (?, ?, ?)')
-      .run(req.file.originalname, req.file.path, rawText);
+    const sections = parsePdf(rawText);
+    let totalEntries = 0;
+    let totalRooms = 0;
+    const timetableIds = [];
 
-    const rooms = parseRoomsPdf(rawText);
-    let count = 0;
     db.transaction(() => {
-      for (const r of rooms) {
-        const result = insertRoom.run(r.room_number, r.building, r.capacity, r.room_type);
-        if (result.changes) count++;
+      for (const sec of sections) {
+        // Insert rooms
+        for (const room of sec.rooms) {
+          const r = insertRoom.run(room, /lab/i.test(room) ? 'lab' : 'classroom');
+          if (r.changes) totalRooms++;
+        }
+
+        // Insert timetable
+        const tt = insertTimetable.run(sec.department, sec.year_sem, sec.section, sec.default_room, req.file.originalname, req.file.path);
+        const ttId = Number(tt.lastInsertRowid);
+        timetableIds.push(ttId);
+
+        // Insert schedule entries
+        for (const e of sec.entries) {
+          insertSchedule.run(ttId, e.day, e.time_slot, e.room_number, e.subject);
+          totalEntries++;
+        }
       }
     })();
 
-    res.json({ message: `${count} rooms extracted and saved`, total_found: rooms.length, raw_text: rawText, rooms });
+    console.log(`Parsed: ${sections.length} sections, ${totalEntries} entries, ${totalRooms} new rooms`);
+
+    return res.json({
+      message: `Parsed ${sections.length} section(s): ${totalEntries} schedule entries, ${totalRooms} new rooms`,
+      sections: sections.map(s => ({ department: s.department, year_sem: s.year_sem, section: s.section, default_room: s.default_room, entries: s.entries.length })),
+      total_entries: totalEntries,
+      total_rooms: totalRooms
+    });
   } catch (err) {
-    console.error('Rooms upload error:', err);
-    res.status(500).json({ error: 'Failed to process rooms PDF: ' + err.message });
+    console.error('Upload error:', err);
+    return res.status(500).json({ error: 'Failed: ' + err.message });
   }
 });
 
@@ -108,75 +122,16 @@ app.delete('/api/rooms/:id', (req, res) => {
   res.json({ message: 'Deleted' });
 });
 
-// ── Upload Timetable PDF ──
-app.post('/api/timetables', upload.single('pdf'), async (req, res) => {
-  try {
-    const { department, year } = req.body;
-    if (!department || !year || !req.file)
-      return res.status(400).json({ error: 'department, year, and pdf are required' });
-
-    console.log('Processing file:', req.file.originalname, 'size:', req.file.size);
-
-    let rawText = '';
-    try {
-      const pdfBuffer = fs.readFileSync(req.file.path);
-      const pdfData = await pdfParse(pdfBuffer);
-      rawText = pdfData.text || '';
-      console.log('PDF parsed, text length:', rawText.length);
-    } catch (pdfErr) {
-      console.error('PDF parse error:', pdfErr.message);
-      rawText = '[PDF could not be fully parsed: ' + pdfErr.message + ']';
-    }
-
-    const result = insertTimetable.run(department, year, req.file.originalname, req.file.path, rawText);
-    const timetableId = result.lastInsertRowid;
-
-    // Auto-extract rooms from timetable PDF
-    const rooms = parseRoomsPdf(rawText);
-    let roomCount = 0;
-    db.transaction(() => {
-      for (const r of rooms) {
-        const res = insertRoom.run(r.room_number, r.building, r.capacity, r.room_type);
-        if (res.changes) roomCount++;
-      }
-    })();
-    console.log(`Auto-extracted ${roomCount} new rooms from timetable`);
-
-    const entries = parseTimetableText(rawText);
-    db.transaction(() => {
-      for (const e of entries) {
-        insertSchedule.run(timetableId, e.day, e.time_slot, e.room_number, e.subject || null, e.faculty || null);
-      }
-    })();
-
-    return res.json({ message: `Timetable uploaded. ${entries.length} schedule entries, ${roomCount} new rooms extracted.`, timetable_id: Number(timetableId), entries_found: entries.length, rooms_added: roomCount, raw_text: rawText });
-  } catch (err) {
-    console.error('Timetable upload error:', err);
-    return res.status(500).json({ error: 'Failed: ' + err.message });
-  }
-});
-
 app.get('/api/timetables', (req, res) => {
-  res.json(db.prepare('SELECT id, department, year, filename, uploaded_at FROM timetables').all());
+  res.json(db.prepare('SELECT id, department, year_sem, section, default_room, filename, uploaded_at FROM timetables').all());
 });
 app.get('/api/timetables/:id/schedule', (req, res) => {
   res.json(db.prepare('SELECT * FROM schedules WHERE timetable_id = ?').all(req.params.id));
 });
 app.delete('/api/timetables/:id', (req, res) => {
-  const tt = db.prepare('SELECT filepath FROM timetables WHERE id = ?').get(req.params.id);
-  if (tt && fs.existsSync(tt.filepath)) fs.unlinkSync(tt.filepath);
   db.prepare('DELETE FROM schedules WHERE timetable_id = ?').run(req.params.id);
   db.prepare('DELETE FROM timetables WHERE id = ?').run(req.params.id);
   res.json({ message: 'Deleted' });
-});
-
-// ── Manually add schedule entry ──
-app.post('/api/schedules', (req, res) => {
-  const { timetable_id, day, time_slot, room_number, subject, faculty } = req.body;
-  if (!timetable_id || !day || !time_slot || !room_number)
-    return res.status(400).json({ error: 'timetable_id, day, time_slot, room_number required' });
-  insertSchedule.run(timetable_id, day, time_slot, room_number, subject || null, faculty || null);
-  res.json({ message: 'Entry added' });
 });
 
 // ── Free Rooms ──
@@ -197,101 +152,118 @@ app.get('/api/slots', (req, res) => {
   res.json({ days, time_slots: timeSlots });
 });
 
-// ── Rooms PDF Parser ──
-// Extracts "Room No: XXX" patterns from timetable-style PDFs
-function parseRoomsPdf(text) {
-  const rooms = new Map();
+// ── PDF Parser ──
+// Splits PDF into sections (one per department/semester/section)
+// Extracts: department, year/semester, section, default room, schedule entries, all room numbers
+function parsePdf(text) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-  for (const line of lines) {
-    // Match patterns like "Room No: 322", "Room No. 328", "R.No.605", "R.No: 710"
-    const matches = line.matchAll(/(?:Room\s*No[.:]\s*|R\.No[.:]\s*)(\d+\w*)/gi);
-    for (const m of matches) {
-      const roomNum = m[1];
-      if (!rooms.has(roomNum)) {
-        rooms.set(roomNum, { room_number: roomNum, building: null, capacity: null, room_type: 'classroom' });
-      }
-    }
-
-    // Mark lab rooms
-    if (/lab/i.test(line)) {
-      const labRoomMatch = line.match(/R\.No[.:]\s*(\d+\w*)/i);
-      if (labRoomMatch && rooms.has(labRoomMatch[1])) {
-        rooms.get(labRoomMatch[1]).room_type = 'lab';
-      }
-    }
-  }
-
-  return Array.from(rooms.values());
-}
-
-
-// ── Timetable Text Parser ──
-// Parses your college timetable format:
-//   Section header: "Room No: 322"
-//   Time slots as columns, days as rows (MON, TUE, etc.)
-//   Subjects in different rooms shown as "(R.No.605)"
-function parseTimetableText(text) {
-  const entries = [];
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-  // Define the fixed time slots from the PDF structure
+  const sections = [];
   const timeSlots = [
     '09:00-09:55', '09:55-10:50', '11:10-12:05',
     '12:05-01:00', '02:15-03:10', '03:10-04:05'
   ];
+  const dayMap = { 'MON': 'Monday', 'TUE': 'Tuesday', 'WED': 'Wednesday', 'THU': 'Thursday', 'FRI': 'Friday', 'SAT': 'Saturday' };
 
-  const dayMap = { 'MON': 'Monday', 'TUE': 'Tuesday', 'WED': 'Wednesday', 'THU': 'Thursday', 'FRI': 'Friday', 'SAT': 'Saturday', 'SUN': 'Sunday' };
-  const dayAbbrevs = Object.keys(dayMap);
-
-  let defaultRoom = null;
+  let department = '';
+  let yearSem = '';
+  let section = '';
+  let defaultRoom = '';
+  let rooms = new Set();
+  let entries = [];
+  let inSection = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // Detect default room: "Room No: 322" or "Room No. 322"
-    const roomHeaderMatch = line.match(/Room\s*No[.:]\s*(\d+\w*)/i);
-    if (roomHeaderMatch) {
-      defaultRoom = roomHeaderMatch[1];
+    // Detect department: "DEPARTMENT OF ..."
+    const deptMatch = line.match(/DEPARTMENT\s+OF\s+(.+)/i);
+    if (deptMatch) {
+      // Save previous section if exists
+      if (inSection && entries.length > 0) {
+        sections.push({ department, year_sem: yearSem, section, default_room: defaultRoom, rooms: Array.from(rooms), entries: [...entries] });
+      }
+      department = deptMatch[1].trim();
+      entries = [];
+      rooms = new Set();
+      inSection = false;
       continue;
     }
 
-    // Detect day rows: line starts with MON, TUE, etc.
-    const dayMatch = line.match(/^(MON|TUE|WED|THU|FRI|SAT|SUN)\b/i);
+    // Detect semester/section: "IV SEMESTER [SECTION-A1]"
+    const semMatch = line.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
+    if (semMatch) {
+      // Save previous section if exists
+      if (inSection && entries.length > 0) {
+        sections.push({ department, year_sem: yearSem, section, default_room: defaultRoom, rooms: Array.from(rooms), entries: [...entries] });
+        entries = [];
+      }
+      yearSem = semMatch[1].trim() + ' Semester';
+      section = semMatch[2].trim();
+      inSection = true;
+      continue;
+    }
+
+    // Detect default room: "Room No: 322"
+    const roomHeaderMatch = line.match(/Room\s*No[.:]\s*(\d+\w*)/i);
+    if (roomHeaderMatch) {
+      defaultRoom = roomHeaderMatch[1];
+      rooms.add(defaultRoom);
+      continue;
+    }
+
+    // Detect alternate rooms in any line: "(R.No.605)"
+    const altRoomMatches = line.matchAll(/R\.No[.:]\s*(\d+\w*)/gi);
+    for (const m of altRoomMatches) {
+      rooms.add(m[1]);
+    }
+
+    // Detect day rows
+    const dayMatch = line.match(/^(MON|TUE|WED|THU|FRI|SAT)\b/i);
     if (!dayMatch || !defaultRoom) continue;
 
     const day = dayMap[dayMatch[1].toUpperCase()];
-    // Get the rest of the line after the day abbreviation
     const rest = line.substring(dayMatch[0].length).trim();
 
-    // Split the rest into subject cells
-    // Subjects are separated by whitespace, but some have (R.No.XXX) attached
-    const cells = rest.split(/\s{2,}/).map(c => c.trim()).filter(Boolean);
+    // Collect continuation lines (subjects might span next lines with R.No references)
+    let fullLine = rest;
+    // Look ahead for lines that are part of this day's data (not a new day, not a header)
+    while (i + 1 < lines.length) {
+      const next = lines[i + 1];
+      if (/^(MON|TUE|WED|THU|FRI|SAT)\b/i.test(next)) break;
+      if (/DEPARTMENT|SEMESTER|Room\s*No|HOUR|HEAD,|Theory|Laboratory|ACADEMIC/i.test(next)) break;
+      if (/^\d{2}\.\d{2}\s*(AM|PM)/i.test(next)) break;
+      // It's a continuation (like "(R.No.605)" on next line)
+      i++;
+      fullLine += ' ' + next;
+    }
 
-    for (let j = 0; j < cells.length && j < timeSlots.length; j++) {
-      const cell = cells[j];
-      if (!cell || cell === 'B' || cell === 'R' || cell === 'E' || cell === 'A' || cell === 'K' ||
-          cell === 'L' || cell === 'U' || cell === 'N' || cell === 'C' || cell === 'H' ||
-          cell === 'BREAK' || cell === 'LUNCH') continue;
+    // Parse cells from the full line
+    // Split by 2+ spaces to get individual subject cells
+    const cells = fullLine.split(/\s{2,}/).map(c => c.trim()).filter(Boolean);
 
-      // Check if this cell has a different room: "(R.No.605)"
-      const altRoomMatch = cell.match(/\(R\.No[.:]\s*(\d+\w*)\)/i);
-      const room = altRoomMatch ? altRoomMatch[1] : defaultRoom;
+    let slotIndex = 0;
+    for (const cell of cells) {
+      if (slotIndex >= timeSlots.length) break;
+      // Skip break/lunch markers
+      if (/^[BREAK|LUNCH|B|R|E|A|K|L|U|N|C|H]$/i.test(cell) && cell.length <= 5) continue;
+
+      const altRoom = cell.match(/\(R\.No[.:]\s*(\d+\w*)\)/i);
+      const room = altRoom ? altRoom[1] : defaultRoom;
       const subject = cell.replace(/\(R\.No[.:]\s*\d+\w*\)/i, '').trim();
 
       if (subject && subject.length > 0) {
-        entries.push({
-          day,
-          time_slot: timeSlots[j],
-          room_number: room,
-          subject,
-          faculty: null
-        });
+        entries.push({ day, time_slot: timeSlots[slotIndex], room_number: room, subject });
       }
+      slotIndex++;
     }
   }
 
-  return entries;
+  // Save last section
+  if (inSection && entries.length > 0) {
+    sections.push({ department, year_sem: yearSem, section, default_room: defaultRoom, rooms: Array.from(rooms), entries: [...entries] });
+  }
+
+  return sections;
 }
 
 // Global error handler

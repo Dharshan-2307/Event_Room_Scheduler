@@ -3,99 +3,60 @@ const API = 'http://localhost:3000';
 function showMsg(el, text, type) {
   el.textContent = text;
   el.className = 'msg ' + type;
-  setTimeout(() => { el.textContent = ''; el.className = 'msg'; }, 6000);
+  setTimeout(() => { el.textContent = ''; el.className = 'msg'; }, 8000);
 }
 
-// ── Rooms Upload ──
-document.getElementById('roomUploadForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const msg = document.getElementById('roomMsg');
-  const preview = document.getElementById('roomPreview');
-  const form = new FormData();
-  form.append('pdf', document.getElementById('roomPdf').files[0]);
-  try {
-    const res = await fetch(API + '/api/rooms/upload', { method: 'POST', body: form });
-    const text = await res.text();
-    let json;
-    try { json = JSON.parse(text); } catch { return showMsg(msg, 'Server error: ' + text.substring(0, 200), 'error'); }
-    if (res.ok) {
-      showMsg(msg, `${json.message} (${json.total_found} found in PDF)`, 'success');
-      preview.style.display = 'block';
-      preview.textContent = json.raw_text;
-      loadRooms();
-    } else showMsg(msg, json.error, 'error');
-  } catch (e) { showMsg(msg, 'Upload failed: ' + e.message, 'error'); }
-});
-
-async function loadRooms() {
-  const rooms = await (await fetch(API + '/api/rooms')).json();
-  document.querySelector('#roomsTable tbody').innerHTML = rooms.length ? rooms.map(r => `
-    <tr><td>${r.room_number}</td><td>${r.building || '-'}</td><td>${r.capacity || '-'}</td>
-    <td>${r.room_type}</td><td><button class="danger" onclick="deleteRoom(${r.id})">Delete</button></td></tr>`).join('')
-    : '<tr><td colspan="5" style="text-align:center;color:#999">No rooms yet.</td></tr>';
-}
-async function deleteRoom(id) { await fetch(API + '/api/rooms/' + id, { method: 'DELETE' }); loadRooms(); }
-
-// ── Timetable Upload ──
+// ── Upload ──
 document.getElementById('uploadForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const msg = document.getElementById('uploadMsg');
   const preview = document.getElementById('parsedPreview');
   const form = new FormData();
-  form.append('department', document.getElementById('dept').value);
-  form.append('year', document.getElementById('year').value);
   form.append('pdf', document.getElementById('pdfFile').files[0]);
   try {
-    const res = await fetch(API + '/api/timetables', { method: 'POST', body: form });
+    const res = await fetch(API + '/api/upload', { method: 'POST', body: form });
     const text = await res.text();
     let json;
-    try { json = JSON.parse(text); } catch { return showMsg(msg, 'Server error: ' + text.substring(0, 200), 'error'); }
+    try { json = JSON.parse(text); } catch { return showMsg(msg, 'Server error: ' + text.substring(0, 300), 'error'); }
     if (res.ok) {
-      showMsg(msg, `Uploaded! ${json.entries_found} schedule entries parsed.`, 'success');
+      showMsg(msg, json.message, 'success');
       preview.style.display = 'block';
-      preview.textContent = json.raw_text;
+      preview.textContent = json.sections.map(s =>
+        `${s.department} | ${s.year_sem} | Section ${s.section} | Room ${s.default_room} | ${s.entries} entries`
+      ).join('\n');
+      loadRooms();
       loadTimetables();
     } else showMsg(msg, json.error, 'error');
   } catch (e) { showMsg(msg, 'Upload failed: ' + e.message, 'error'); }
 });
 
-// ── Manual Entry ──
-document.getElementById('manualForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const msg = document.getElementById('manualMsg');
-  const body = {
-    timetable_id: +document.getElementById('manualTtId').value,
-    day: document.getElementById('manualDay').value,
-    time_slot: document.getElementById('manualTime').value,
-    room_number: document.getElementById('manualRoom').value,
-    subject: document.getElementById('manualSubject').value,
-    faculty: document.getElementById('manualFaculty').value
-  };
-  const res = await fetch(API + '/api/schedules', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  });
-  const json = await res.json();
-  if (res.ok) showMsg(msg, json.message, 'success');
-  else showMsg(msg, json.error, 'error');
-});
+// ── Rooms ──
+async function loadRooms() {
+  const rooms = await (await fetch(API + '/api/rooms')).json();
+  document.querySelector('#roomsTable tbody').innerHTML = rooms.length ? rooms.map(r => `
+    <tr><td>${r.room_number}</td><td>${r.room_type}</td>
+    <td><button class="danger" onclick="deleteRoom(${r.id})">Delete</button></td></tr>`).join('')
+    : '<tr><td colspan="3" style="text-align:center;color:#999">No rooms yet.</td></tr>';
+}
+async function deleteRoom(id) { await fetch(API + '/api/rooms/' + id, { method: 'DELETE' }); loadRooms(); }
 
-// ── Timetables List ──
+// ── Timetables ──
 async function loadTimetables() {
   const list = await (await fetch(API + '/api/timetables')).json();
   document.querySelector('#ttTable tbody').innerHTML = list.length ? list.map(t => `
-    <tr><td>${t.id}</td><td>${t.department}</td><td>${t.year}</td><td>${t.filename}</td>
-    <td>${new Date(t.uploaded_at).toLocaleString()}</td>
+    <tr><td>${t.id}</td><td>${t.department}</td><td>${t.year_sem}</td><td>${t.section}</td>
+    <td>${t.default_room}</td><td>${t.filename}</td>
     <td><button class="secondary" onclick="viewSchedule(${t.id})">View</button>
     <button class="danger" onclick="deleteTimetable(${t.id})">Delete</button></td></tr>`).join('')
-    : '<tr><td colspan="6" style="text-align:center;color:#999">No timetables yet.</td></tr>';
+    : '<tr><td colspan="7" style="text-align:center;color:#999">No timetables yet.</td></tr>';
 }
+
 async function viewSchedule(id) {
   const entries = await (await fetch(API + '/api/timetables/' + id + '/schedule')).json();
   document.getElementById('scheduleCard').style.display = 'block';
   document.querySelector('#scheduleTable tbody').innerHTML = entries.length ? entries.map(e => `
-    <tr><td>${e.day}</td><td>${e.time_slot}</td><td>${e.room_number}</td>
-    <td>${e.subject || '-'}</td><td>${e.faculty || '-'}</td></tr>`).join('')
-    : '<tr><td colspan="5" style="text-align:center;color:#999">No entries.</td></tr>';
+    <tr><td>${e.day}</td><td>${e.time_slot}</td><td>${e.room_number}</td><td>${e.subject || '-'}</td></tr>`).join('')
+    : '<tr><td colspan="4" style="text-align:center;color:#999">No entries.</td></tr>';
 }
 async function deleteTimetable(id) {
   await fetch(API + '/api/timetables/' + id, { method: 'DELETE' });
@@ -124,7 +85,7 @@ async function findFreeRooms() {
   } else {
     el.innerHTML = `<p style="margin-bottom:0.8rem;color:#555">${data.free_rooms.length} room(s) free on <strong>${data.day}</strong> at <strong>${data.time_slot}</strong></p>`
       + data.free_rooms.map(r => `<div class="room-card"><div class="room-num">${r.room_number}</div>
-      <div class="room-info">${r.building || 'N/A'} · ${r.capacity || '?'} seats · ${r.room_type}</div></div>`).join('');
+      <div class="room-info">${r.room_type}</div></div>`).join('');
   }
 }
 
