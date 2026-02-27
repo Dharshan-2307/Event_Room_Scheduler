@@ -276,8 +276,13 @@ function parsePdf(text) {
       // "Room No. 704" or "Room No.: 612" — room override for previous subject
       const roomRefMatch = parseRoomRef(dl);
       if (roomRefMatch) {
+        // Apply to all consecutive entries of the same subject (for 2-hour LABs)
         if (slotEntries.length > 0) {
-          slotEntries[slotEntries.length - 1].room = roomRefMatch;
+          const lastSubj = slotEntries[slotEntries.length - 1].subject;
+          for (let k = slotEntries.length - 1; k >= 0; k--) {
+            if (slotEntries[k].subject === lastSubj) slotEntries[k].room = roomRefMatch;
+            else break;
+          }
         }
         rooms.add(roomRefMatch);
         continue;
@@ -287,7 +292,11 @@ function parsePdf(text) {
       const pureRNoMatch = dl.match(/^\(R\.No[.:]\s*(\d+\w*)\)$/i);
       if (pureRNoMatch) {
         if (slotEntries.length > 0) {
-          slotEntries[slotEntries.length - 1].room = pureRNoMatch[1];
+          const lastSubj = slotEntries[slotEntries.length - 1].subject;
+          for (let k = slotEntries.length - 1; k >= 0; k--) {
+            if (slotEntries[k].subject === lastSubj) slotEntries[k].room = pureRNoMatch[1];
+            else break;
+          }
           rooms.add(pureRNoMatch[1]);
         }
         continue;
@@ -296,7 +305,11 @@ function parsePdf(text) {
       // Bare room number like "2406" — room override for previous subject
       if (isBareRoomNumber(dl)) {
         if (slotEntries.length > 0) {
-          slotEntries[slotEntries.length - 1].room = dl;
+          const lastSubj = slotEntries[slotEntries.length - 1].subject;
+          for (let k = slotEntries.length - 1; k >= 0; k--) {
+            if (slotEntries[k].subject === lastSubj) slotEntries[k].room = dl;
+            else break;
+          }
           rooms.add(dl);
         }
         continue;
@@ -324,17 +337,28 @@ function parsePdf(text) {
         continue;
       }
 
-      // "XX LAB" pattern (two-word subject)
+      // "XX LAB" pattern (two-word subject, occupies 2 slots)
       if (/^\w+\s+LAB$/i.test(dl)) {
         slotEntries.push({ subject: dl, room: defaultRoom });
+        slotEntries.push({ subject: dl, room: defaultRoom }); // 2nd slot
         continue;
       }
 
-      // Plain subjects separated by spaces
-      const subjects = dl.split(/\s+/).filter(Boolean);
-      for (const s of subjects) {
-        if (skipWords.has(s.toUpperCase())) continue;
-        slotEntries.push({ subject: s, room: defaultRoom });
+      // Plain subjects separated by spaces — but detect "XX LAB" pairs
+      const words = dl.split(/\s+/).filter(Boolean);
+      let w = 0;
+      while (w < words.length) {
+        if (skipWords.has(words[w].toUpperCase())) { w++; continue; }
+        // Check if this word + next word form "XX LAB"
+        if (w + 1 < words.length && words[w + 1].toUpperCase() === 'LAB') {
+          const labSubject = words[w] + ' LAB';
+          slotEntries.push({ subject: labSubject, room: defaultRoom });
+          slotEntries.push({ subject: labSubject, room: defaultRoom }); // 2nd slot
+          w += 2;
+        } else {
+          slotEntries.push({ subject: words[w], room: defaultRoom });
+          w++;
+        }
       }
     }
 
