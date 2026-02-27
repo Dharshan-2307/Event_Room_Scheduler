@@ -59,42 +59,47 @@ const insertRoom = db.prepare('INSERT OR IGNORE INTO rooms (room_number, room_ty
 const insertTimetable = db.prepare('INSERT INTO timetables (department, year_sem, section, default_room, filename, filepath) VALUES (?, ?, ?, ?, ?, ?)');
 const insertSchedule = db.prepare('INSERT INTO schedules (timetable_id, day, time_slot, room_number, subject) VALUES (?, ?, ?, ?, ?)');
 
-// ── Upload PDF (single endpoint) ──
+// ── Custom page renderer for position-aware text extraction ──
+function positionPageRender(pageData) {
+  return pageData.getTextContent({ normalizeWhitespace: false }).then(function(textContent) {
+    const items = textContent.items.map(item => ({
+      x: Math.round(item.transform[4]),
+      y: Math.round(item.transform[5]),
+      t: item.str.trim(),
+      w: Math.round(item.width)
+    })).filter(i => i.t.length > 0);
+    return JSON.stringify(items);
+  });
+}
+
+// ── Upload PDF ──
 app.post('/api/upload', upload.single('pdf'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
-
     console.log('Processing:', req.file.originalname, 'size:', req.file.size);
 
-    let rawText = '';
+    const pdfBuffer = fs.readFileSync(req.file.path);
+    let pages;
     try {
-      const pdfBuffer = fs.readFileSync(req.file.path);
-      const pdfData = await pdfParse(pdfBuffer);
-      rawText = pdfData.text || '';
+      const pdfData = await pdfParse(pdfBuffer, { pagerender: positionPageRender });
+      pages = pdfData.text.split('\n\n').filter(Boolean);
     } catch (pdfErr) {
       console.error('PDF parse error:', pdfErr.message);
       return res.status(400).json({ error: 'Could not read PDF: ' + pdfErr.message });
     }
 
-    const sections = parsePdf(rawText);
+    const sections = parsePdfPages(pages);
     let totalEntries = 0;
     let totalRooms = 0;
-    const timetableIds = [];
 
     db.transaction(() => {
       for (const sec of sections) {
-        // Insert rooms
         for (const room of sec.rooms) {
           const r = insertRoom.run(room, /lab/i.test(room) ? 'lab' : 'classroom');
           if (r.changes) totalRooms++;
         }
-
-        // Insert timetable
         const tt = insertTimetable.run(sec.department, sec.year_sem, sec.section, sec.default_room, req.file.originalname, req.file.path);
         const ttId = Number(tt.lastInsertRowid);
-        timetableIds.push(ttId);
-
-        // Insert schedule entries
         for (const e of sec.entries) {
           insertSchedule.run(ttId, e.day, e.time_slot, e.room_number, e.subject);
           totalEntries++;
@@ -103,7 +108,6 @@ app.post('/api/upload', upload.single('pdf'), async (req, res) => {
     })();
 
     console.log(`Parsed: ${sections.length} sections, ${totalEntries} entries, ${totalRooms} new rooms`);
-
     return res.json({
       message: `Parsed ${sections.length} section(s): ${totalEntries} schedule entries, ${totalRooms} new rooms`,
       sections: sections.map(s => ({ department: s.department, year_sem: s.year_sem, section: s.section, default_room: s.default_room, entries: s.entries.length })),
@@ -126,7 +130,6 @@ app.get('/api/timetables', (req, res) => {
   res.json(db.prepare('SELECT id, department, year_sem, section, default_room, filename, uploaded_at FROM timetables').all());
 });
 
-// Delete all timetables from a specific PDF file
 app.delete('/api/uploads/:filename', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
   const tts = db.prepare('SELECT id, filepath FROM timetables WHERE filename = ?').all(filename);
@@ -140,13 +143,14 @@ app.delete('/api/uploads/:filename', (req, res) => {
   res.json({ message: `Removed ${tts.length} section(s) from ${filename}` });
 });
 
-// Unique uploaded PDF files
 app.get('/api/uploads', (req, res) => {
   res.json(db.prepare('SELECT filename, MIN(uploaded_at) as uploaded_at, COUNT(*) as sections FROM timetables GROUP BY filename ORDER BY uploaded_at DESC').all());
 });
+
 app.get('/api/timetables/:id/schedule', (req, res) => {
   res.json(db.prepare('SELECT * FROM schedules WHERE timetable_id = ?').all(req.params.id));
 });
+
 app.delete('/api/timetables/:id', (req, res) => {
   db.prepare('DELETE FROM schedules WHERE timetable_id = ?').run(req.params.id);
   db.prepare('DELETE FROM timetables WHERE id = ?').run(req.params.id);
@@ -171,230 +175,367 @@ app.get('/api/slots', (req, res) => {
   res.json({ days, time_slots: timeSlots });
 });
 
-// ── PDF Parser ──
-// Handles multiple timetable formats:
-// CSE: "IV SEMESTER [SECTION-A1]", "Room No: 322", "(R.No.605)"
-// DS:  "IV Semester (DS-1)", "Room No.: 2852", "Room No. 704", bare room numbers
-function parsePdf(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const sections = [];
-  const timeSlots = [
-    '09:00-09:55', '09:55-10:50', '11:10-12:05',
-    '12:05-01:00', '02:15-03:10', '03:10-04:05'
-  ];
-  const dayMap = { 'MON': 'Monday', 'TUE': 'Tuesday', 'WED': 'Wednesday', 'THU': 'Thursday', 'FRI': 'Friday', 'SAT': 'Saturday' };
-  const skipWords = new Set(['B','R','E','A','K','L','U','N','C','H','BREAK','LUNCH','HOUR','TO','AM','PM','DAY','/HR']);
-  const skipLinePatterns = /^(HOUR|HEAD,|Theory|Laboratory|ACADEMIC|SCHOOL|TIME-TABLE|CLASS\s*WORK|MOHAN|Sree|SUBJECT|CODE|FACULTY|w\.e\.f|W\.E\.F|DAY|\/HR|\d{2}[.:]\d{2}\s*(AM|PM))/i;
+// ══════════════════════════════════════════════════════════
+// Position-aware PDF Parser
+// Uses X/Y coordinates from pdf-parse pagerender to correctly
+// map subjects to time slot columns, preserving free periods.
+// ══════════════════════════════════════════════════════════
 
-  let department = '';
-  let yearSem = '';
-  let section = '';
-  let defaultRoom = '';
-  let rooms = new Set();
-  let entries = [];
-  let inSection = false;
+const TIME_SLOTS = [
+  '09:00-09:55', '09:55-10:50', '11:10-12:05',
+  '12:05-01:00', '02:15-03:10', '03:10-04:05'
+];
+const DAY_NAMES = { MON: 'Monday', TUE: 'Tuesday', WED: 'Wednesday', THU: 'Thursday', FRI: 'Friday' };
+const SKIP_WORDS = new Set(['B','R','E','A','K','L','U','N','C','H','BREAK','LUNCH','DAY','/HR','HOUR','TO','AM','PM']);
 
-  function saveSection() {
-    if (inSection && entries.length > 0) {
-      sections.push({ department, year_sem: yearSem, section, default_room: defaultRoom, rooms: Array.from(rooms), entries: [...entries] });
+function parsePdfPages(pages) {
+  const allSections = [];
+
+  for (const pageText of pages) {
+    let items;
+    try { items = JSON.parse(pageText); } catch { continue; }
+    if (!items.length) continue;
+
+    const section = parseOnePage(items);
+    if (section && section.entries.length > 0) {
+      allSections.push(section);
     }
-    entries = [];
+  }
+  return allSections;
+}
+
+function parseOnePage(items) {
+  // ── Step 1: Extract header info (department, semester, section, default room) ──
+  let department = '', yearSem = '', section = '', defaultRoom = '';
+  const rooms = new Set();
+
+  // Concatenate all text items sorted by Y desc (top first) then X asc
+  // to find header patterns
+  const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
+
+  // Build full text lines by grouping items at similar Y
+  const yGroups = groupByY(sorted, 5);
+
+  for (const group of yGroups) {
+    // Merge adjacent fragments within the group (e.g., "285" + "2" → "2852")
+    const mergedGroup = mergeAdjacentItems(group.sort((a, b) => a.x - b.x));
+    const lineText = mergedGroup.map(i => i.t).join(' ');
+
+    // Department
+    const deptMatch = lineText.match(/DEPARTMENT\s+OF\s+(.+)/i);
+    if (deptMatch) { department = deptMatch[1].trim(); continue; }
+
+    // CSE format: "IV SEMESTER [SECTION-A1]" or "IV SEMESTER [SECTION A1]"
+    const cseMatch = lineText.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
+    if (cseMatch) {
+      yearSem = cseMatch[1] + ' Semester';
+      section = cseMatch[2];
+      continue;
+    }
+
+    // DS format: "IV Semester (DS-1)" or "IV Semester ( IT )"
+    // After merge, line looks like "IV Semester (DS-1)" or "IV Semester (IT)"
+    const dsMatch = lineText.match(/I\s*V\s+Semester\s*\(([^)]+)\)/i);
+    if (dsMatch) {
+      yearSem = 'IV Semester';
+      section = dsMatch[1].trim();
+      continue;
+    }
+
+    // Default room: "Room No: 322" or "Room No.: 2852"
+    // Only in header area (high Y = top of page, above day rows)
+    const roomHeaderMatch = lineText.match(/Room\s*No[.:]+\s*(\d+)/i);
+    if (roomHeaderMatch && !defaultRoom) {
+      // Header area: Y > 590 for CSE, Y > 640 for DS — use 590 as threshold
+      if (group[0].y > 590) {
+        defaultRoom = roomHeaderMatch[1];
+        rooms.add(defaultRoom);
+        continue;
+      }
+    }
   }
 
-  // Check if a string is a bare room number (3-4 digit number)
-  function isBareRoomNumber(s) {
-    return /^\d{3,4}$/.test(s);
+  if (!section) return null;
+
+  // ── Step 2: Determine column boundaries from time header positions ──
+  // Find time header items (09:00, 09:55, 11:10, etc.)
+  const timeHeaderItems = items.filter(i =>
+    /^(09|10|11|12|01|02|03|04)[.:]\d{2}/.test(i.t) && i.y > 640
+  );
+
+  let colBoundaries;
+  if (timeHeaderItems.length >= 4) {
+    colBoundaries = computeColumnBoundaries(timeHeaderItems);
+  } else {
+    // Fallback: use BREAK/LUNCH column positions to infer boundaries
+    colBoundaries = inferColumnBoundaries(items);
   }
 
-  // Check if line is a "Room No" reference (various formats)
-  function parseRoomRef(line) {
-    const m = line.match(/^Room\s*No[.:]+\s*(\d+\w*)/i);
-    return m ? m[1] : null;
+  if (!colBoundaries) {
+    // Last resort: hardcoded boundaries that work for both CSE and DS
+    colBoundaries = [
+      { left: 95, right: 170 },   // Slot 1
+      { left: 170, right: 237 },  // Slot 2
+      { left: 255, right: 325 },  // Slot 3
+      { left: 325, right: 395 },  // Slot 4
+      { left: 410, right: 475 },  // Slot 5
+      { left: 475, right: 550 },  // Slot 6
+    ];
   }
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  // ── Step 3: Find day rows and extract schedule entries ──
+  const dayItems = items.filter(i => /^(MON|TUE|WED|THU|FRI)$/i.test(i.t));
+  const entries = [];
 
-    // Detect department
-    const deptMatch = line.match(/DEPARTMENT\s+OF\s+(.+)/i);
-    if (deptMatch) {
-      saveSection();
-      department = deptMatch[1].trim();
-      rooms = new Set();
-      inSection = false;
-      continue;
-    }
+  for (const dayItem of dayItems) {
+    const dayName = DAY_NAMES[dayItem.t.toUpperCase()];
+    if (!dayName) continue;
 
-    // Detect semester/section - multiple formats:
-    // "IV SEMESTER [SECTION-A1]"
-    // "IV Semester (DS-1)"
-    const semMatch1 = line.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
-    const semMatch2 = line.match(/(\w+)\s+Semester\s*\(([^)]+)\)/i);
-    if (semMatch1 || semMatch2) {
-      saveSection();
-      const m = semMatch1 || semMatch2;
-      yearSem = m[1].trim() + ' Semester';
-      section = m[2].trim();
-      inSection = true;
-      continue;
-    }
+    // Collect all items in this day's row (within Y tolerance)
+    const rowItems = items.filter(i =>
+      Math.abs(i.y - dayItem.y) <= 10 && i.x > 90
+    ).sort((a, b) => a.x - b.x);
 
-    // Detect default room header: "Room No: 322", "Room No.: 2852"
-    const roomHeader = parseRoomRef(line);
-    if (roomHeader && !inSection) {
-      // This is a section default room in the header area
-      defaultRoom = roomHeader;
-      rooms.add(defaultRoom);
-      continue;
-    }
-    if (roomHeader && inSection) {
-      // Could be header for a new sub-section or just the default room
-      defaultRoom = roomHeader;
-      rooms.add(defaultRoom);
-      continue;
-    }
+    // Also collect items slightly above/below (room refs, MOOC tags)
+    // that belong to this row (within ~14px Y range)
+    let extendedRowItems = items.filter(i =>
+      Math.abs(i.y - dayItem.y) <= 14 && i.x > 90
+    ).sort((a, b) => a.y - b.y || a.x - b.x);
 
-    // Skip non-content lines
-    if (skipLinePatterns.test(line)) continue;
-    if (skipWords.has(line.toUpperCase())) continue;
-    if (/^\d{2}[.:]\d{2}\s*(AM|PM)/i.test(line)) continue;
+    // Merge adjacent text fragments at same Y that are very close in X
+    // (e.g., "2" + "406" → "2406", "80" + "3" + ")" → "803)")
+    extendedRowItems = mergeAdjacentItems(extendedRowItems);
 
-    // Detect day row
-    const dayMatch = line.match(/^(MON|TUE|WED|THU|FRI|SAT)\b/i);
-    if (!dayMatch || !defaultRoom) continue;
+    // Assign each item to a column slot
+    const slotData = [null, null, null, null, null, null]; // 6 slots
 
-    const day = dayMap[dayMatch[1].toUpperCase()];
+    for (const item of extendedRowItems) {
+      // Skip BREAK/LUNCH letters and day names
+      if (SKIP_WORDS.has(item.t.toUpperCase())) continue;
+      if (/^(MON|TUE|WED|THU|FRI|SAT)$/i.test(item.t)) continue;
 
-    // Collect all content lines for this day
-    let dayLines = [];
-    const restOfLine = line.substring(dayMatch[0].length).trim();
-    if (restOfLine) dayLines.push(restOfLine);
+      const slotIdx = getSlotIndex(item.x, colBoundaries);
+      if (slotIdx === -1) continue;
 
-    while (i + 1 < lines.length) {
-      const next = lines[i + 1];
-      if (/^(MON|TUE|WED|THU|FRI|SAT)\b/i.test(next)) break;
-      if (/DEPARTMENT|SEMESTER|HOUR|HEAD,|Theory|Laboratory|ACADEMIC|SCHOOL|SUBJECT|CODE|FACULTY/i.test(next)) break;
-      if (/^\d{2}[.:]\d{2}\s*(AM|PM)/i.test(next)) break;
-      if (skipWords.has(next.toUpperCase())) { i++; continue; }
-      i++;
-      dayLines.push(next);
-    }
+      if (!slotData[slotIdx]) {
+        slotData[slotIdx] = { subjects: [], roomOverride: null, mooc: false };
+      }
 
-    // Parse dayLines into slot entries
-    let slotEntries = [];
+      const txt = item.t;
 
-    for (let d = 0; d < dayLines.length; d++) {
-      let dl = dayLines[d];
-
-      // "(MOOC)" tag — mark previous entry as MOOC but it still occupies a slot
-      if (/^\(MOOC\)$/i.test(dl)) {
-        if (slotEntries.length > 0) {
-          slotEntries[slotEntries.length - 1].subject += ' (MOOC)';
+      // Room reference: "Room No. 704", "(R.No.605)", "(R.No.80" + "3" + ")"
+      if (/^Room\s*No[.:]/i.test(txt)) {
+        const m = txt.match(/Room\s*No[.:]+\s*(\d+)/i);
+        if (m) {
+          slotData[slotIdx].roomOverride = m[1];
+          rooms.add(m[1]);
         }
         continue;
       }
-
-      // "Room No. 704" or "Room No.: 612" — room override for previous subject(s)
-      const roomRefMatch = parseRoomRef(dl);
-      if (roomRefMatch) {
-        if (slotEntries.length > 0) {
-          const lastSubj = slotEntries[slotEntries.length - 1].subject;
-          for (let k = slotEntries.length - 1; k >= 0; k--) {
-            if (slotEntries[k].subject === lastSubj) slotEntries[k].room = roomRefMatch;
-            else break;
-          }
-        }
-        rooms.add(roomRefMatch);
-        continue;
-      }
-
-      // "(R.No.605)" — room override for previous subject(s)
-      const pureRNoMatch = dl.match(/^\(R\.No[.:]\s*(\d+\w*)\)$/i);
-      if (pureRNoMatch) {
-        if (slotEntries.length > 0) {
-          const lastSubj = slotEntries[slotEntries.length - 1].subject;
-          for (let k = slotEntries.length - 1; k >= 0; k--) {
-            if (slotEntries[k].subject === lastSubj) slotEntries[k].room = pureRNoMatch[1];
-            else break;
-          }
-          rooms.add(pureRNoMatch[1]);
+      if (/^\(R\.No[.:]/i.test(txt)) {
+        const m = txt.match(/\(R\.No[.:]\s*(\d+)/i);
+        if (m) {
+          slotData[slotIdx].roomOverride = m[1];
+          rooms.add(m[1]);
         }
         continue;
       }
+      // Closing part of split R.No like "3)" or ")"
+      if (/^\d*\)$/.test(txt)) continue;
 
-      // Bare room number like "2406" — room override for previous subject
-      if (isBareRoomNumber(dl)) {
-        if (slotEntries.length > 0) {
-          const lastSubj = slotEntries[slotEntries.length - 1].subject;
-          for (let k = slotEntries.length - 1; k >= 0; k--) {
-            if (slotEntries[k].subject === lastSubj) slotEntries[k].room = dl;
-            else break;
-          }
-          rooms.add(dl);
-        }
+      // MOOC tag
+      if (/^\(MOOC\)$/i.test(txt)) {
+        slotData[slotIdx].mooc = true;
         continue;
       }
 
-      // Inline room ref: "QAVA (R.No.802)"
-      const inlineMatch = dl.match(/^(.+?)\s*\(R\.No[.:]\s*(\d+\w*)\)(.*)$/i);
-      if (inlineMatch) {
-        const before = inlineMatch[1].trim().split(/\s+/);
-        const roomNum = inlineMatch[2];
-        const after = inlineMatch[3].trim();
-        rooms.add(roomNum);
-
-        for (let s = 0; s < before.length - 1; s++) {
-          slotEntries.push({ subject: before[s], room: defaultRoom });
-        }
-        if (before.length > 0) {
-          slotEntries.push({ subject: before[before.length - 1], room: roomNum });
-        }
-        if (after) {
-          for (const s of after.split(/\s+/).filter(Boolean)) {
-            slotEntries.push({ subject: s, room: defaultRoom });
-          }
-        }
+      // Bare room number (3-4 digits) appearing above/below subject
+      if (/^\d{3,4}$/.test(txt) && Math.abs(item.y - dayItem.y) > 5) {
+        slotData[slotIdx].roomOverride = txt;
+        rooms.add(txt);
         continue;
       }
 
-      // "XX LAB" as a standalone line — 2 slots
-      if (/^\w+\s+LAB$/i.test(dl)) {
-        slotEntries.push({ subject: dl, room: defaultRoom });
-        slotEntries.push({ subject: dl, room: defaultRoom });
-        continue;
-      }
+      // Skip single BREAK/LUNCH letters
+      if (txt.length === 1 && /[BREAKLUNCH]/i.test(txt)) continue;
 
-      // Line with multiple subjects — detect "XX LAB" pairs within
-      const words = dl.split(/\s+/).filter(Boolean);
-      let w = 0;
-      while (w < words.length) {
-        if (skipWords.has(words[w].toUpperCase())) { w++; continue; }
-        // "XX LAB" pair — 2 slots
-        if (w + 1 < words.length && words[w + 1].toUpperCase() === 'LAB') {
-          const labSubject = words[w] + ' LAB';
-          slotEntries.push({ subject: labSubject, room: defaultRoom });
-          slotEntries.push({ subject: labSubject, room: defaultRoom });
-          w += 2;
-        } else {
-          slotEntries.push({ subject: words[w], room: defaultRoom });
-          w++;
-        }
-      }
+      // It's a subject name
+      slotData[slotIdx].subjects.push(txt);
     }
 
-    // Map slot entries to time slots (max 6 slots per day)
-    for (let j = 0; j < slotEntries.length && j < timeSlots.length; j++) {
+    // ── Step 4: Build entries from slot data ──
+    // LAB subjects span 2 consecutive slots. In the PDF, the merged cell
+    // places the text in the first column. The second column is empty.
+    // We detect LAB subjects and duplicate them into the next slot.
+    for (let s = 0; s < 6; s++) {
+      const sd = slotData[s];
+      if (!sd || sd.subjects.length === 0) continue;
+      if (sd.subjects[0] === '_FILLED_') continue; // Already filled by LAB span
+
+      let subjectName = sd.subjects.join(' ');
+      if (sd.mooc) subjectName += ' (MOOC)';
+
+      const roomNum = sd.roomOverride || defaultRoom;
+      const isLab = /\bLAB\b/i.test(subjectName);
+
       entries.push({
-        day,
-        time_slot: timeSlots[j],
-        room_number: slotEntries[j].room,
-        subject: slotEntries[j].subject
+        day: dayName,
+        time_slot: TIME_SLOTS[s],
+        room_number: roomNum,
+        subject: subjectName
       });
+
+      // If it's a LAB and the next slot is empty, fill it too
+      if (isLab && s + 1 < 6 && (!slotData[s + 1] || slotData[s + 1].subjects.length === 0)) {
+        // Also check if next slot has a room override we should use
+        const nextRoom = (slotData[s + 1] && slotData[s + 1].roomOverride) || roomNum;
+        entries.push({
+          day: dayName,
+          time_slot: TIME_SLOTS[s + 1],
+          room_number: nextRoom,
+          subject: subjectName
+        });
+        slotData[s + 1] = { subjects: ['_FILLED_'], roomOverride: null, mooc: false };
+      }
+
+      if (roomNum) rooms.add(roomNum);
     }
   }
 
-  saveSection();
-  return sections;
+  return {
+    department,
+    year_sem: yearSem,
+    section,
+    default_room: defaultRoom,
+    rooms: Array.from(rooms),
+    entries
+  };
+}
+
+// Merge adjacent text items that are very close in X and at similar Y
+// This handles split numbers like "2" + "406" → "2406"
+function mergeAdjacentItems(items) {
+  if (items.length <= 1) return items;
+  const merged = [{ ...items[0] }];
+  for (let i = 1; i < items.length; i++) {
+    const prev = merged[merged.length - 1];
+    const curr = items[i];
+    const prevEnd = prev.x + prev.w;
+    const gap = curr.x - prevEnd;
+    // Merge only if same Y (within 2px), gap is tiny (< 3px),
+    // AND at least one item is short (≤3 chars) — indicating a fragment
+    // This merges "285"+"2" and "(R.No.80"+"3"+")" but not "DEPARTMENT OF"+"COMPUTER..."
+    const isFragment = curr.t.length <= 3 || prev.t.length <= 3;
+    if (Math.abs(curr.y - prev.y) <= 2 && gap < 3 && gap >= -3 && isFragment) {
+      prev.t = prev.t + curr.t;
+      prev.w = (curr.x + curr.w) - prev.x;
+      continue;
+    }
+    merged.push({ ...curr });
+  }
+  return merged;
+}
+
+// Group items by Y coordinate (within tolerance)
+function groupByY(items, tolerance) {
+  const groups = [];
+  let currentGroup = [];
+  let currentY = null;
+
+  for (const item of items) {
+    if (currentY === null || Math.abs(item.y - currentY) <= tolerance) {
+      currentGroup.push(item);
+      if (currentY === null) currentY = item.y;
+    } else {
+      if (currentGroup.length) groups.push(currentGroup);
+      currentGroup = [item];
+      currentY = item.y;
+    }
+  }
+  if (currentGroup.length) groups.push(currentGroup);
+  return groups;
+}
+
+// Compute column boundaries from time header X positions
+function computeColumnBoundaries(timeHeaders) {
+  // Group time headers by X proximity to find 6 column left edges
+  const leftEdges = [];
+  const sorted = [...timeHeaders].sort((a, b) => a.x - b.x);
+
+  for (const th of sorted) {
+    const existing = leftEdges.find(c => Math.abs(c - th.x) < 40);
+    if (!existing) leftEdges.push(th.x);
+  }
+  leftEdges.sort((a, b) => a - b);
+
+  if (leftEdges.length < 6) return null;
+
+  const cols = leftEdges.slice(0, 6);
+
+  // Each column spans from its left edge to just before the next column's left edge
+  // Add margin before first column and after last column
+  const boundaries = [];
+  for (let i = 0; i < 6; i++) {
+    const left = i === 0 ? cols[i] - 25 : cols[i] - 10;
+    const right = i < 5 ? cols[i + 1] - 11 : cols[i] + 50;
+    boundaries.push({ left, right });
+  }
+  return boundaries;
+}
+
+// Infer column boundaries from BREAK/LUNCH positions
+function inferColumnBoundaries(items) {
+  // BREAK letters appear between slots 2 and 3
+  // LUNCH letters appear between slots 4 and 5
+  const breakLetters = items.filter(i => i.t === 'B' || i.t === 'E' || i.t === 'K');
+  const lunchLetters = items.filter(i => i.t === 'L' || i.t === 'U' || i.t === 'H');
+
+  if (breakLetters.length < 2) return null;
+
+  // Compute LUNCH X first
+  let lunchX = null;
+  if (lunchLetters.length >= 2) {
+    lunchX = Math.round(lunchLetters.reduce((s, i) => s + i.x, 0) / lunchLetters.length);
+  }
+
+  // Filter BREAK items to only morning BREAK (not near LUNCH position)
+  let morningBreak = breakLetters;
+  if (lunchX !== null) {
+    morningBreak = breakLetters.filter(i => Math.abs(i.x - lunchX) > 50);
+  }
+  if (morningBreak.length < 2) morningBreak = breakLetters;
+
+  const breakX = Math.round(morningBreak.reduce((s, i) => s + i.x, 0) / morningBreak.length);
+
+  if (lunchX === null || Math.abs(lunchX - breakX) < 50) {
+    lunchX = breakX + 150;
+  }
+
+  // BREAK at breakX means: slots 1-2 are to the left, slots 3-4 between BREAK and LUNCH
+  // Use the gap positions to define column boundaries
+  // Slot widths: before BREAK ~70px each, between BREAK-LUNCH ~70px each, after LUNCH ~65px each
+  const preBreakWidth = (breakX - 100) / 2;  // 2 slots before BREAK
+  const midWidth = (lunchX - breakX - 20) / 2; // 2 slots between BREAK and LUNCH
+  const postWidth = 65; // estimate for after LUNCH
+
+  return [
+    { left: 95, right: 95 + preBreakWidth },                                    // Slot 1
+    { left: 95 + preBreakWidth, right: breakX - 5 },                            // Slot 2
+    { left: breakX + 10, right: breakX + 10 + midWidth },                       // Slot 3
+    { left: breakX + 10 + midWidth, right: lunchX - 5 },                        // Slot 4
+    { left: lunchX + 10, right: lunchX + 10 + postWidth },                      // Slot 5
+    { left: lunchX + 10 + postWidth, right: lunchX + 10 + 2 * postWidth + 10 }, // Slot 6
+  ];
+}
+
+
+// Determine which time slot (0-5) an X coordinate falls into
+function getSlotIndex(x, boundaries) {
+  for (let i = 0; i < boundaries.length; i++) {
+    if (x >= boundaries[i].left && x <= boundaries[i].right) return i;
+  }
+  // If between boundaries (in BREAK/LUNCH gap), skip
+  return -1;
 }
 
 // Global error handler
