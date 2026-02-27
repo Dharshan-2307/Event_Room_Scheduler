@@ -153,14 +153,9 @@ app.get('/api/slots', (req, res) => {
 });
 
 // ── PDF Parser ──
-// Format per section:
-//   DEPARTMENT OF COMPUTER SCIENCE AND ENGINEERING
-//   IV SEMESTER [SECTION-A1]
-//   Room No: 322
-//   Then day rows: MON, TUE, etc.
-//   Each day's subjects come on subsequent lines, one subject or group per line
-//   Subjects on the same line separated by spaces = one subject per time slot
-//   (R.No.605) on next line = previous subject uses that room instead of default
+// Handles multiple timetable formats:
+// CSE: "IV SEMESTER [SECTION-A1]", "Room No: 322", "(R.No.605)"
+// DS:  "IV Semester (DS-1)", "Room No.: 2852", "Room No. 704", bare room numbers
 function parsePdf(text) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const sections = [];
@@ -169,8 +164,8 @@ function parsePdf(text) {
     '12:05-01:00', '02:15-03:10', '03:10-04:05'
   ];
   const dayMap = { 'MON': 'Monday', 'TUE': 'Tuesday', 'WED': 'Wednesday', 'THU': 'Thursday', 'FRI': 'Friday', 'SAT': 'Saturday' };
-  const dayAbbrevs = new Set(Object.keys(dayMap));
-  const skipWords = new Set(['B','R','E','A','K','L','U','N','C','H','BREAK','LUNCH','HOUR','TO','AM','PM']);
+  const skipWords = new Set(['B','R','E','A','K','L','U','N','C','H','BREAK','LUNCH','HOUR','TO','AM','PM','DAY','/HR']);
+  const skipLinePatterns = /^(HOUR|HEAD,|Theory|Laboratory|ACADEMIC|SCHOOL|TIME-TABLE|CLASS\s*WORK|MOHAN|Sree|SUBJECT|CODE|FACULTY|w\.e\.f|W\.E\.F|DAY|\/HR|\d{2}[.:]\d{2}\s*(AM|PM))/i;
 
   let department = '';
   let yearSem = '';
@@ -187,6 +182,17 @@ function parsePdf(text) {
     entries = [];
   }
 
+  // Check if a string is a bare room number (3-4 digit number)
+  function isBareRoomNumber(s) {
+    return /^\d{3,4}$/.test(s);
+  }
+
+  // Check if line is a "Room No" reference (various formats)
+  function parseRoomRef(line) {
+    const m = line.match(/^Room\s*No[.:]+\s*(\d+\w*)/i);
+    return m ? m[1] : null;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
@@ -200,28 +206,39 @@ function parsePdf(text) {
       continue;
     }
 
-    // Detect semester/section: "IV SEMESTER [SECTION-A1]"
-    const semMatch = line.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
-    if (semMatch) {
+    // Detect semester/section - multiple formats:
+    // "IV SEMESTER [SECTION-A1]"
+    // "IV Semester (DS-1)"
+    const semMatch1 = line.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
+    const semMatch2 = line.match(/(\w+)\s+Semester\s*\(([^)]+)\)/i);
+    if (semMatch1 || semMatch2) {
       saveSection();
-      yearSem = semMatch[1].trim() + ' Semester';
-      section = semMatch[2].trim();
+      const m = semMatch1 || semMatch2;
+      yearSem = m[1].trim() + ' Semester';
+      section = m[2].trim();
       inSection = true;
       continue;
     }
 
-    // Detect default room
-    const roomHeaderMatch = line.match(/Room\s*No[.:]\s*(\d+\w*)/i);
-    if (roomHeaderMatch) {
-      defaultRoom = roomHeaderMatch[1];
+    // Detect default room header: "Room No: 322", "Room No.: 2852"
+    const roomHeader = parseRoomRef(line);
+    if (roomHeader && !inSection) {
+      // This is a section default room in the header area
+      defaultRoom = roomHeader;
+      rooms.add(defaultRoom);
+      continue;
+    }
+    if (roomHeader && inSection) {
+      // Could be header for a new sub-section or just the default room
+      defaultRoom = roomHeader;
       rooms.add(defaultRoom);
       continue;
     }
 
     // Skip non-content lines
-    if (/^(HOUR|HEAD,|Theory|Laboratory|ACADEMIC|SCHOOL|TIME-TABLE|w\.e\.f)/i.test(line)) continue;
-    if (/^\d{2}\.\d{2}\s*(AM|PM)/i.test(line)) continue;
+    if (skipLinePatterns.test(line)) continue;
     if (skipWords.has(line.toUpperCase())) continue;
+    if (/^\d{2}[.:]\d{2}\s*(AM|PM)/i.test(line)) continue;
 
     // Detect day row
     const dayMatch = line.match(/^(MON|TUE|WED|THU|FRI|SAT)\b/i);
@@ -229,71 +246,81 @@ function parsePdf(text) {
 
     const day = dayMap[dayMatch[1].toUpperCase()];
 
-    // Collect all content lines for this day until next day or section header
+    // Collect all content lines for this day
     let dayLines = [];
     const restOfLine = line.substring(dayMatch[0].length).trim();
     if (restOfLine) dayLines.push(restOfLine);
 
     while (i + 1 < lines.length) {
       const next = lines[i + 1];
-      // Stop at next day, section header, or time header
       if (/^(MON|TUE|WED|THU|FRI|SAT)\b/i.test(next)) break;
-      if (/DEPARTMENT|SEMESTER|Room\s*No|HOUR|HEAD,|Theory|Laboratory|ACADEMIC|SCHOOL/i.test(next)) break;
-      if (/^\d{2}\.\d{2}\s*(AM|PM)/i.test(next)) break;
+      if (/DEPARTMENT|SEMESTER|HOUR|HEAD,|Theory|Laboratory|ACADEMIC|SCHOOL|SUBJECT|CODE|FACULTY/i.test(next)) break;
+      if (/^\d{2}[.:]\d{2}\s*(AM|PM)/i.test(next)) break;
       if (skipWords.has(next.toUpperCase())) { i++; continue; }
       i++;
       dayLines.push(next);
     }
 
-    // Now parse dayLines into individual subject+room entries
-    // Each line is either:
-    //   "CP" - single subject (1 slot)
-    //   "(R.No.605)" - room override for previous subject
-    //   "CN NMPS SE MS" - multiple subjects (1 slot each)
-    //   "CP LAB" - two-word subject (1 slot)
-    //   "NSS NSS NSS NSS NSS NSS" - repeated subject
-    let slotEntries = []; // {subject, room}
+    // Parse dayLines into slot entries
+    let slotEntries = [];
 
-    for (const dl of dayLines) {
-      // Check if this line is just a room reference
-      const pureRoomMatch = dl.match(/^\(R\.No[.:]\s*(\d+\w*)\)$/i);
-      if (pureRoomMatch) {
-        // Apply room to previous entry
+    for (let dl of dayLines) {
+      // Skip (MOOC) tags
+      if (/^\(MOOC\)$/i.test(dl)) continue;
+
+      // "Room No. 704" or "Room No.: 612" — room override for previous subject
+      const roomRefMatch = parseRoomRef(dl);
+      if (roomRefMatch) {
         if (slotEntries.length > 0) {
-          slotEntries[slotEntries.length - 1].room = pureRoomMatch[1];
-          rooms.add(pureRoomMatch[1]);
+          slotEntries[slotEntries.length - 1].room = roomRefMatch;
+        }
+        rooms.add(roomRefMatch);
+        continue;
+      }
+
+      // "(R.No.605)" — room override for previous subject
+      const pureRNoMatch = dl.match(/^\(R\.No[.:]\s*(\d+\w*)\)$/i);
+      if (pureRNoMatch) {
+        if (slotEntries.length > 0) {
+          slotEntries[slotEntries.length - 1].room = pureRNoMatch[1];
+          rooms.add(pureRNoMatch[1]);
         }
         continue;
       }
 
-      // Check if line contains inline room refs like "QAVA (R.No.802)"
-      const inlineRoomMatch = dl.match(/^(.+?)\s*\(R\.No[.:]\s*(\d+\w*)\)(.*)$/i);
-      if (inlineRoomMatch) {
-        const beforeSubjects = inlineRoomMatch[1].trim().split(/\s+/);
-        const roomNum = inlineRoomMatch[2];
-        const afterSubjects = inlineRoomMatch[3].trim();
+      // Bare room number like "2406" — room override for previous subject
+      if (isBareRoomNumber(dl)) {
+        if (slotEntries.length > 0) {
+          slotEntries[slotEntries.length - 1].room = dl;
+          rooms.add(dl);
+        }
+        continue;
+      }
+
+      // Inline room ref: "QAVA (R.No.802)" or "CP (R.No.605)"
+      const inlineMatch = dl.match(/^(.+?)\s*\(R\.No[.:]\s*(\d+\w*)\)(.*)$/i);
+      if (inlineMatch) {
+        const before = inlineMatch[1].trim().split(/\s+/);
+        const roomNum = inlineMatch[2];
+        const after = inlineMatch[3].trim();
         rooms.add(roomNum);
 
-        // Subjects before the room ref
-        for (let s = 0; s < beforeSubjects.length - 1; s++) {
-          slotEntries.push({ subject: beforeSubjects[s], room: defaultRoom });
+        for (let s = 0; s < before.length - 1; s++) {
+          slotEntries.push({ subject: before[s], room: defaultRoom });
         }
-        // Last subject before room ref gets that room
-        if (beforeSubjects.length > 0) {
-          slotEntries.push({ subject: beforeSubjects[beforeSubjects.length - 1], room: roomNum });
+        if (before.length > 0) {
+          slotEntries.push({ subject: before[before.length - 1], room: roomNum });
         }
-        // Subjects after the room ref
-        if (afterSubjects) {
-          for (const s of afterSubjects.split(/\s+/).filter(Boolean)) {
+        if (after) {
+          for (const s of after.split(/\s+/).filter(Boolean)) {
             slotEntries.push({ subject: s, room: defaultRoom });
           }
         }
         continue;
       }
 
-      // Check for "XX LAB" pattern (two-word subject)
-      const labMatch = dl.match(/^(\w+)\s+LAB$/i);
-      if (labMatch) {
+      // "XX LAB" pattern (two-word subject)
+      if (/^\w+\s+LAB$/i.test(dl)) {
         slotEntries.push({ subject: dl, room: defaultRoom });
         continue;
       }
@@ -301,6 +328,7 @@ function parsePdf(text) {
       // Plain subjects separated by spaces
       const subjects = dl.split(/\s+/).filter(Boolean);
       for (const s of subjects) {
+        if (skipWords.has(s.toUpperCase())) continue;
         slotEntries.push({ subject: s, room: defaultRoom });
       }
     }
@@ -316,7 +344,6 @@ function parsePdf(text) {
     }
   }
 
-  // Save last section
   saveSection();
   return sections;
 }
