@@ -137,25 +137,28 @@ async function deleteTimetable(id) {
 async function loadSlots() {
   const data = await (await fetch(API + '/api/slots')).json();
   const daySelect = document.getElementById('findDay');
-  const timeSelect = document.getElementById('findTime');
   if (data.days.length) {
     daySelect.innerHTML = data.days.map(d => `<option value="${d}">${d}</option>`).join('');
-    timeSelect.innerHTML = data.time_slots.map(t => `<option value="${t}">${t}</option>`).join('');
   } else {
     daySelect.innerHTML = '<option value="">No data yet — upload a timetable</option>';
-    timeSelect.innerHTML = '<option value="">—</option>';
   }
 }
 async function findFreeRooms() {
   const day = document.getElementById('findDay').value;
-  const time = document.getElementById('findTime').value;
-  if (!day || !time) return;
-  const data = await (await fetch(API + `/api/free-rooms?day=${encodeURIComponent(day)}&time_slot=${encodeURIComponent(time)}`)).json();
+  const from = document.getElementById('findFrom').value;
+  const to = document.getElementById('findTo').value;
+  if (!day || !from || !to) return;
+  if (from >= to) {
+    document.getElementById('freeResults').innerHTML = '<p style="color:#e74c3c;font-weight:600">"From" time must be before "To" time.</p>';
+    return;
+  }
+  const data = await (await fetch(API + `/api/free-rooms?day=${encodeURIComponent(day)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)).json();
   const el = document.getElementById('freeResults');
+  const rangeLabel = `${from} – ${to}`;
   if (data.free_rooms.length === 0) {
-    el.innerHTML = '<p style="color:#e74c3c;font-weight:600">No free rooms for this slot.</p>';
+    el.innerHTML = '<p style="color:#e74c3c;font-weight:600">No free rooms for this time range.</p>';
   } else {
-    el.innerHTML = `<p style="margin-bottom:0.8rem;color:#555">${data.free_rooms.length} room(s) free on <strong>${data.day}</strong> at <strong>${data.time_slot}</strong></p>`
+    el.innerHTML = `<p style="margin-bottom:0.8rem;color:#555">${data.free_rooms.length} room(s) free on <strong>${data.day}</strong> from <strong>${rangeLabel}</strong></p>`
       + data.free_rooms.map(r => `<div class="room-card"><div class="room-num">${r.room_number}</div>
       <div class="room-info">${r.room_type}</div></div>`).join('');
   }

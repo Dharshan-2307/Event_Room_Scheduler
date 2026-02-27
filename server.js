@@ -157,16 +157,46 @@ app.delete('/api/timetables/:id', (req, res) => {
   res.json({ message: 'Deleted' });
 });
 
-// ── Free Rooms ──
+// ── Free Rooms (flexible time range) ──
+// Convert "HH:MM" (12h or 24h) to minutes since midnight for comparison
+function timeToMinutes(t) {
+  let [h, m] = t.split(':').map(Number);
+  // Handle 12-hour format: 01:00-04:05 are PM (13:00-16:05)
+  if (h >= 1 && h <= 4) h += 12;
+  // 12:xx stays as 12:xx (noon)
+  return h * 60 + m;
+}
+
 app.get('/api/free-rooms', (req, res) => {
-  const { day, time_slot } = req.query;
-  if (!day || !time_slot) return res.status(400).json({ error: 'day and time_slot required' });
+  const { day, from, to } = req.query;
+  if (!day || !from || !to) return res.status(400).json({ error: 'day, from, and to are required' });
+
+  const fromMin = timeToMinutes(from);
+  const toMin = timeToMinutes(to);
+
+  // Find all time slots that overlap with the requested range
+  const allSlots = TIME_SLOTS;
+  const overlapping = allSlots.filter(slot => {
+    const [start, end] = slot.split('-');
+    const slotStart = timeToMinutes(start);
+    const slotEnd = timeToMinutes(end);
+    // Overlap: requested range starts before slot ends AND ends after slot starts
+    return fromMin < slotEnd && toMin > slotStart;
+  });
+
   const allRooms = db.prepare('SELECT * FROM rooms').all();
-  const occupied = db.prepare(
-    'SELECT DISTINCT room_number FROM schedules WHERE LOWER(day) = LOWER(?) AND time_slot = ?'
-  ).all(day, time_slot).map(r => r.room_number);
-  const freeRooms = allRooms.filter(r => !occupied.includes(r.room_number));
-  res.json({ day, time_slot, free_rooms: freeRooms, occupied_rooms: occupied });
+
+  // A room is free only if it's free in ALL overlapping slots
+  const occupiedSet = new Set();
+  for (const slot of overlapping) {
+    const rows = db.prepare(
+      'SELECT DISTINCT room_number FROM schedules WHERE LOWER(day) = LOWER(?) AND time_slot = ?'
+    ).all(day, slot);
+    for (const r of rows) occupiedSet.add(r.room_number);
+  }
+
+  const freeRooms = allRooms.filter(r => !occupiedSet.has(r.room_number));
+  res.json({ day, from, to, overlapping_slots: overlapping, free_rooms: freeRooms, occupied_rooms: Array.from(occupiedSet) });
 });
 
 app.get('/api/slots', (req, res) => {

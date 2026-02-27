@@ -58,13 +58,16 @@
     <!-- Find Free Rooms -->
     <div class="card highlight">
       <h2>🔍 Find Free Rooms</h2>
-      <p class="hint">Select a day and time slot to see available rooms for your event.</p>
+      <p class="hint">Pick a day and your desired time range to find available rooms.</p>
       <div class="row">
         <label>Day:
           <select id="findDay"></select>
         </label>
-        <label>Time Slot:
-          <select id="findTime"></select>
+        <label>From:
+          <input type="time" id="findFrom" value="09:00">
+        </label>
+        <label>To:
+          <input type="time" id="findTo" value="10:50">
         </label>
       </div>
       <button onclick="findFreeRooms()">Search Free Rooms</button>
