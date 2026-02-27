@@ -27,9 +27,28 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
       loadRooms();
       loadTimetables();
       loadSlots();
+      loadUploadedPdfs();
     } else showMsg(msg, json.error, 'error');
   } catch (e) { showMsg(msg, 'Upload failed: ' + e.message, 'error'); }
 });
+
+// ── Uploaded PDFs ──
+async function loadUploadedPdfs() {
+  const list = await (await fetch(API + '/api/uploads')).json();
+  const el = document.getElementById('uploadedPdfs');
+  if (!list.length) {
+    el.innerHTML = '<p style="color:#999;text-align:center">No PDFs uploaded yet.</p>';
+    return;
+  }
+  el.innerHTML = list.map(f => `
+    <div class="pdf-item">
+      <span class="pdf-icon">📄</span>
+      <div class="pdf-info">
+        <div class="pdf-name">${f.filename}</div>
+        <div class="pdf-meta">${f.sections} section(s) · Uploaded ${new Date(f.uploaded_at).toLocaleString()}</div>
+      </div>
+    </div>`).join('');
+}
 
 // ── Rooms ──
 async function loadRooms() {
@@ -136,3 +155,4 @@ async function findFreeRooms() {
 loadRooms();
 loadTimetables();
 loadSlots();
+loadUploadedPdfs();

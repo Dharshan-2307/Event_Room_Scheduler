@@ -181,3 +181,16 @@ th { background: #f8f9fa; font-weight: 600; color: #555; }
   color: #e67e22;
   font-weight: 600;
 }
+
+/* Uploaded PDFs */
+.pdf-item {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid #eee;
+}
+.pdf-item:last-child { border-bottom: none; }
+.pdf-icon { font-size: 1.5rem; }
+.pdf-name { font-weight: 600; color: #333; font-size: 0.95rem; }
+.pdf-meta { font-size: 0.8rem; color: #888; margin-top: 2px; }

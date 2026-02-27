@@ -125,6 +125,11 @@ app.delete('/api/rooms/:id', (req, res) => {
 app.get('/api/timetables', (req, res) => {
   res.json(db.prepare('SELECT id, department, year_sem, section, default_room, filename, uploaded_at FROM timetables').all());
 });
+
+// Unique uploaded PDF files
+app.get('/api/uploads', (req, res) => {
+  res.json(db.prepare('SELECT filename, MIN(uploaded_at) as uploaded_at, COUNT(*) as sections FROM timetables GROUP BY filename ORDER BY uploaded_at DESC').all());
+});
 app.get('/api/timetables/:id/schedule', (req, res) => {
   res.json(db.prepare('SELECT * FROM schedules WHERE timetable_id = ?').all(req.params.id));
 });
