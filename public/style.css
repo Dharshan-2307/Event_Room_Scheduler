@@ -128,3 +128,56 @@ th { background: #f8f9fa; font-weight: 600; color: #555; }
 .room-card .room-info { font-size: 0.8rem; color: #555; margin-top: 0.2rem; }
 
 #freeResults { min-height: 60px; }
+
+/* Timetable Grid */
+.timetable-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  table-layout: fixed;
+}
+.timetable-grid th {
+  background: #667eea;
+  color: white;
+  padding: 0.5rem 0.3rem;
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+.timetable-grid th:first-child {
+  width: 90px;
+}
+.day-cell {
+  background: #f0f2f5;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.5rem 0.3rem;
+  color: #444;
+}
+.slot-cell {
+  text-align: center;
+  padding: 0.5rem 0.3rem;
+  border: 1px solid #e8e8e8;
+  vertical-align: middle;
+}
+.slot-cell.empty {
+  color: #ccc;
+  background: #fafafa;
+}
+.slot-subject {
+  font-weight: 700;
+  color: #333;
+  font-size: 0.85rem;
+}
+.slot-room {
+  font-size: 0.72rem;
+  color: #667eea;
+  margin-top: 2px;
+}
+.slot-cell.alt-room {
+  background: #fff8e1;
+}
+.slot-cell.alt-room .slot-room {
+  color: #e67e22;
+  font-weight: 600;
+}
