@@ -376,8 +376,8 @@ function parseOnePage(items) {
       if (sd.mooc) subjectName += ' (MOOC)';
 
       const roomNum = sd.roomOverride || defaultRoom;
-      // 2-hour subjects: LAB, QAVA, LIB — they span 2 consecutive slots
-      const is2Hour = /\bLAB\b/i.test(subjectName) || /\bQAVA\b/i.test(subjectName);
+      // 2-hour subjects: LAB, QAVA, CP — they span 2 consecutive slots
+      const is2Hour = /\bLAB\b/i.test(subjectName) || /^QAVA$/i.test(subjectName) || /^CP$/i.test(subjectName);
 
       entries.push({
         day: dayName,
