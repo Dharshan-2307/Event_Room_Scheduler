@@ -376,7 +376,8 @@ function parseOnePage(items) {
       if (sd.mooc) subjectName += ' (MOOC)';
 
       const roomNum = sd.roomOverride || defaultRoom;
-      const isLab = /\bLAB\b/i.test(subjectName);
+      // 2-hour subjects: LAB, QAVA, LIB — they span 2 consecutive slots
+      const is2Hour = /\bLAB\b/i.test(subjectName) || /\bQAVA\b/i.test(subjectName);
 
       entries.push({
         day: dayName,
@@ -385,8 +386,8 @@ function parseOnePage(items) {
         subject: subjectName
       });
 
-      // If it's a LAB and the next slot is empty, fill it too
-      if (isLab && s + 1 < 6 && (!slotData[s + 1] || slotData[s + 1].subjects.length === 0)) {
+      // If it's a 2-hour subject and the next slot is empty, fill it too
+      if (is2Hour && s + 1 < 6 && (!slotData[s + 1] || slotData[s + 1].subjects.length === 0)) {
         // Also check if next slot has a room override we should use
         const nextRoom = (slotData[s + 1] && slotData[s + 1].roomOverride) || roomNum;
         entries.push({
