@@ -283,14 +283,20 @@ function parsePdf(text) {
     // Parse dayLines into slot entries
     let slotEntries = [];
 
-    for (let dl of dayLines) {
-      // Skip (MOOC) tags
-      if (/^\(MOOC\)$/i.test(dl)) continue;
+    for (let d = 0; d < dayLines.length; d++) {
+      let dl = dayLines[d];
 
-      // "Room No. 704" or "Room No.: 612" — room override for previous subject
+      // "(MOOC)" tag — mark previous entry as MOOC but it still occupies a slot
+      if (/^\(MOOC\)$/i.test(dl)) {
+        if (slotEntries.length > 0) {
+          slotEntries[slotEntries.length - 1].subject += ' (MOOC)';
+        }
+        continue;
+      }
+
+      // "Room No. 704" or "Room No.: 612" — room override for previous subject(s)
       const roomRefMatch = parseRoomRef(dl);
       if (roomRefMatch) {
-        // Apply to all consecutive entries of the same subject (for 2-hour LABs)
         if (slotEntries.length > 0) {
           const lastSubj = slotEntries[slotEntries.length - 1].subject;
           for (let k = slotEntries.length - 1; k >= 0; k--) {
@@ -302,7 +308,7 @@ function parsePdf(text) {
         continue;
       }
 
-      // "(R.No.605)" — room override for previous subject
+      // "(R.No.605)" — room override for previous subject(s)
       const pureRNoMatch = dl.match(/^\(R\.No[.:]\s*(\d+\w*)\)$/i);
       if (pureRNoMatch) {
         if (slotEntries.length > 0) {
@@ -329,7 +335,7 @@ function parsePdf(text) {
         continue;
       }
 
-      // Inline room ref: "QAVA (R.No.802)" or "CP (R.No.605)"
+      // Inline room ref: "QAVA (R.No.802)"
       const inlineMatch = dl.match(/^(.+?)\s*\(R\.No[.:]\s*(\d+\w*)\)(.*)$/i);
       if (inlineMatch) {
         const before = inlineMatch[1].trim().split(/\s+/);
@@ -351,23 +357,23 @@ function parsePdf(text) {
         continue;
       }
 
-      // "XX LAB" pattern (two-word subject, occupies 2 slots)
+      // "XX LAB" as a standalone line — 2 slots
       if (/^\w+\s+LAB$/i.test(dl)) {
         slotEntries.push({ subject: dl, room: defaultRoom });
-        slotEntries.push({ subject: dl, room: defaultRoom }); // 2nd slot
+        slotEntries.push({ subject: dl, room: defaultRoom });
         continue;
       }
 
-      // Plain subjects separated by spaces — but detect "XX LAB" pairs
+      // Line with multiple subjects — detect "XX LAB" pairs within
       const words = dl.split(/\s+/).filter(Boolean);
       let w = 0;
       while (w < words.length) {
         if (skipWords.has(words[w].toUpperCase())) { w++; continue; }
-        // Check if this word + next word form "XX LAB"
+        // "XX LAB" pair — 2 slots
         if (w + 1 < words.length && words[w + 1].toUpperCase() === 'LAB') {
           const labSubject = words[w] + ' LAB';
           slotEntries.push({ subject: labSubject, room: defaultRoom });
-          slotEntries.push({ subject: labSubject, room: defaultRoom }); // 2nd slot
+          slotEntries.push({ subject: labSubject, room: defaultRoom });
           w += 2;
         } else {
           slotEntries.push({ subject: words[w], room: defaultRoom });
@@ -376,7 +382,7 @@ function parsePdf(text) {
       }
     }
 
-    // Map slot entries to time slots
+    // Map slot entries to time slots (max 6 slots per day)
     for (let j = 0; j < slotEntries.length && j < timeSlots.length; j++) {
       entries.push({
         day,

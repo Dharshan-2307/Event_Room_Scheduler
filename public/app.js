@@ -92,7 +92,7 @@ async function viewSchedule(id) {
 
   // Build timetable grid: days as rows, time slots as columns
   const timeSlots = ['09:00-09:55', '09:55-10:50', '11:10-12:05', '12:05-01:00', '02:15-03:10', '03:10-04:05'];
-  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
   // Group entries by day+time
   const grid = {};
