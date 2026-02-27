@@ -47,7 +47,16 @@ async function loadUploadedPdfs() {
         <div class="pdf-name">${f.filename}</div>
         <div class="pdf-meta">${f.sections} section(s) · Uploaded ${new Date(f.uploaded_at).toLocaleString()}</div>
       </div>
+      <button class="danger" onclick="deletePdf('${encodeURIComponent(f.filename)}')">Remove</button>
     </div>`).join('');
+}
+
+async function deletePdf(filename) {
+  await fetch(API + '/api/uploads/' + filename, { method: 'DELETE' });
+  loadUploadedPdfs();
+  loadTimetables();
+  loadRooms();
+  loadSlots();
 }
 
 // ── Rooms ──

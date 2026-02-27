@@ -126,6 +126,20 @@ app.get('/api/timetables', (req, res) => {
   res.json(db.prepare('SELECT id, department, year_sem, section, default_room, filename, uploaded_at FROM timetables').all());
 });
 
+// Delete all timetables from a specific PDF file
+app.delete('/api/uploads/:filename', (req, res) => {
+  const filename = decodeURIComponent(req.params.filename);
+  const tts = db.prepare('SELECT id, filepath FROM timetables WHERE filename = ?').all(filename);
+  db.transaction(() => {
+    for (const tt of tts) {
+      db.prepare('DELETE FROM schedules WHERE timetable_id = ?').run(tt.id);
+      if (tt.filepath && fs.existsSync(tt.filepath)) fs.unlinkSync(tt.filepath);
+    }
+    db.prepare('DELETE FROM timetables WHERE filename = ?').run(filename);
+  })();
+  res.json({ message: `Removed ${tts.length} section(s) from ${filename}` });
+});
+
 // Unique uploaded PDF files
 app.get('/api/uploads', (req, res) => {
   res.json(db.prepare('SELECT filename, MIN(uploaded_at) as uploaded_at, COUNT(*) as sections FROM timetables GROUP BY filename ORDER BY uploaded_at DESC').all());
