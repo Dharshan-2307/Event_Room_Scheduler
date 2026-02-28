@@ -30,7 +30,6 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
       preview.textContent = json.sections.map(s =>
         `${s.department} | ${s.year_sem} | Section ${s.section} | Room ${s.default_room} | ${s.entries} entries`
       ).join('\n');
-      loadTimetables();
       loadSlots();
       loadUploadedPdfs();
     } else showMsg(msg, json.error, 'error');
@@ -59,72 +58,7 @@ async function loadUploadedPdfs() {
 async function deletePdf(filename) {
   await fetch(API + '/api/uploads/' + filename, { method: 'DELETE' });
   loadUploadedPdfs();
-  loadTimetables();
   loadSlots();
-}
-
-// ── Timetables ──
-async function loadTimetables() {
-  const list = await (await fetch(API + '/api/timetables')).json();
-  document.querySelector('#ttTable tbody').innerHTML = list.length ? list.map(t => `
-    <tr><td>${t.id}</td><td>${t.department}</td><td>${t.year_sem}</td><td>${t.section}</td>
-    <td>${t.default_room}</td><td>${t.filename}</td>
-    <td><button class="secondary" onclick="viewSchedule(${t.id})">View</button>
-    <button class="danger" onclick="deleteTimetable(${t.id})">Delete</button></td></tr>`).join('')
-    : '<tr><td colspan="7" style="text-align:center;color:#999">No timetables yet.</td></tr>';
-}
-
-async function viewSchedule(id) {
-  const entries = await (await fetch(API + '/api/timetables/' + id + '/schedule')).json();
-  const card = document.getElementById('scheduleCard');
-  card.style.display = 'block';
-
-  if (!entries.length) {
-    document.querySelector('#scheduleTable').outerHTML = '<p style="color:#999;text-align:center">No entries.</p>';
-    return;
-  }
-
-  // Build timetable grid: days as rows, time slots as columns
-  const timeSlots = ['09:00-09:55', '09:55-10:50', '11:10-12:05', '12:05-01:00', '02:15-03:10', '03:10-04:05'];
-  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-  // Group entries by day+time
-  const grid = {};
-  for (const e of entries) {
-    const key = e.day + '|' + e.time_slot;
-    grid[key] = e;
-  }
-
-  let html = '<table class="timetable-grid"><thead><tr><th>Day / Time</th>';
-  for (const t of timeSlots) {
-    html += `<th>${t}</th>`;
-  }
-  html += '</tr></thead><tbody>';
-
-  for (const day of days) {
-    html += `<tr><td class="day-cell">${day}</td>`;
-    for (const slot of timeSlots) {
-      const e = grid[day + '|' + slot];
-      if (e) {
-        const isAltRoom = e.room_number !== entries[0]?.room_number;
-        html += `<td class="slot-cell${isAltRoom ? ' alt-room' : ''}">
-          <div class="slot-subject">${e.subject}</div>
-          <div class="slot-room">${e.room_number}</div>
-        </td>`;
-      } else {
-        html += '<td class="slot-cell empty">—</td>';
-      }
-    }
-    html += '</tr>';
-  }
-  html += '</tbody></table>';
-
-  document.getElementById('scheduleGrid').innerHTML = html;
-}
-async function deleteTimetable(id) {
-  await fetch(API + '/api/timetables/' + id, { method: 'DELETE' });
-  loadTimetables();
-  document.getElementById('scheduleCard').style.display = 'none';
 }
 
 // ── Find Free Rooms ──
@@ -158,6 +92,5 @@ async function findFreeRooms() {
   }
 }
 
-loadTimetables();
 loadSlots();
 loadUploadedPdfs();
