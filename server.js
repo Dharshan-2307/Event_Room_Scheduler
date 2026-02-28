@@ -290,6 +290,14 @@ function parseOnePage(items, pageNum) {
   // Build full text lines by grouping items at similar Y
   const yGroups = groupByY(sorted, 5);
 
+  // Also build full page text for fallback matching (handles split fragments across Y-groups)
+  const allText = items.map(i => i.t).join(' ');
+  const normAll = allText
+    .replace(/\bI\s+V\b/g, 'IV').replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
+    .replace(/\bV\s+I\s+I\b/g, 'VII').replace(/\bV\s+I\b/g, 'VI')
+    .replace(/\bI\s+I\s+I\b/g, 'III').replace(/\bI\s+I\b/g, 'II')
+    .replace(/Sec\s*tion/gi, 'Section');
+
   for (const group of yGroups) {
     // Merge adjacent fragments within the group (e.g., "285" + "2" → "2852")
     const mergedGroup = mergeAdjacentItems(group.sort((a, b) => a.x - b.x));
@@ -297,7 +305,7 @@ function parseOnePage(items, pageNum) {
 
     // Department
     const deptMatch = lineText.match(/DEPARTMENT\s+OF\s+(.+)/i);
-    if (deptMatch) { department = deptMatch[1].trim(); continue; }
+    if (deptMatch && !department) { department = deptMatch[1].trim(); continue; }
 
     // Normalize split roman numerals: "I V" → "IV", "V I" → "VI", "I I" → "II"
     const normLine = lineText
@@ -306,11 +314,12 @@ function parseOnePage(items, pageNum) {
       .replace(/\bI\s+I\s+I\b/g, 'III')
       .replace(/\bI\s+I\b/g, 'II')
       .replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
-      .replace(/\bV\s+I\s+I\b/g, 'VII');
+      .replace(/\bV\s+I\s+I\b/g, 'VII')
+      .replace(/Sec\s*tion/gi, 'Section');
 
     // CSE format: "IV SEMESTER [SECTION-A1]" or "IV SEMESTER [SECTION A1]"
     const cseMatch = normLine.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
-    if (cseMatch) {
+    if (cseMatch && !section) {
       yearSem = cseMatch[1] + ' Semester';
       section = cseMatch[2];
       continue;
@@ -318,15 +327,15 @@ function parseOnePage(items, pageNum) {
 
     // EEE format: "VI SEMESTER (SECTION - 01)" or "IV SEMESTER (SECTION-01)"
     const eeeMatch = normLine.match(/(\w+)\s+SEMESTER\s*\(SECTION[-\s]*(\w+)\)/i);
-    if (eeeMatch) {
+    if (eeeMatch && !section) {
       yearSem = eeeMatch[1] + ' Semester';
       section = eeeMatch[2];
       continue;
     }
 
     // ECE/EIE format: "IV Sem – Section – 1" or "VI Sem - Section - 2"
-    const eceMatch = normLine.match(/(\w+)\s+Sem\w*\s*[–\-]\s*Sec\s*tion\s*[–\-]\s*(\w+)/i);
-    if (eceMatch) {
+    const eceMatch = normLine.match(/(\w+)\s+Sem\w*\s*[–\-]\s*Section\s*[–\-]\s*(\w+)/i);
+    if (eceMatch && !section) {
       yearSem = eceMatch[1] + ' Semester';
       section = eceMatch[2];
       continue;
@@ -336,40 +345,89 @@ function parseOnePage(items, pageNum) {
     const civilMatch = normLine.match(/B\.?\s*Tech\s+(\w+)\s+Semester/i);
     if (civilMatch && !yearSem) {
       yearSem = civilMatch[1] + ' Semester';
-      // Section might be embedded like "(Section-1)" or "Section 1" on same line
       const secInLine = normLine.match(/Section[-\s]*(\w+)/i);
       if (secInLine) section = secInLine[1];
-      else section = 'A'; // fallback
       continue;
     }
 
     // DS/IT/CS format: "IV Semester (DS-1)" or "VI Semester ( IT )" or "VI Semester (CS-2)"
     const dsMatch = normLine.match(/(\w+)\s+Semester\s*\(\s*([^)]+)\)/i);
-    if (dsMatch) {
+    if (dsMatch && !section) {
       yearSem = dsMatch[1] + ' Semester';
-      section = dsMatch[1].trim() !== dsMatch[1] ? dsMatch[2].trim() : dsMatch[2].trim();
       section = dsMatch[2].trim();
       continue;
     }
 
-    // Mechanical format: "TIME – TABLE" with section info like "IV Sem" elsewhere
-    // Try to catch semester from lines like "IV Sem" standalone
-    const semOnly = normLine.match(/^(\w+)\s+Sem(?:ester)?\s*$/i);
-    if (semOnly && !yearSem) {
-      yearSem = semOnly[1] + ' Semester';
-      continue;
-    }
-
-    // Default room: "Room No: 322" or "Room No.: 2852" or "Room No: 20 8" (split)
-    // Only in header area (high Y = top of page, above day rows)
+    // Default room: "Room No: 322" or "Room No.: 2852"
     const roomHeaderMatch = normLine.match(/Room\s*No[.:]*\s*(\d+)/i);
     if (roomHeaderMatch && !defaultRoom) {
-      // Header area: Y > 590 for CSE, Y > 640 for DS — use 590 as threshold
       if (group[0].y > 590) {
         defaultRoom = roomHeaderMatch[1];
         rooms.add(defaultRoom);
         continue;
       }
+    }
+  }
+
+  // ── Fallback: if per-line matching failed, try full page text ──
+  if (!section) {
+    // Department from full text
+    const deptFull = normAll.match(/DEPARTMENT\s+OF\s+([\w\s&]+?)(?:\s+ACADEMIC|\s+CLASS|\s+TIME)/i);
+    if (deptFull && !department) department = deptFull[1].trim();
+
+    // CSE: [SECTION-A1]
+    const cseFull = normAll.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
+    if (cseFull) { yearSem = cseFull[1] + ' Semester'; section = cseFull[2]; }
+
+    // EEE: (SECTION - 01)
+    if (!section) {
+      const eeeFull = normAll.match(/(\w+)\s+SEMESTER\s*\(SECTION[-\s]*(\w+)\)/i);
+      if (eeeFull) { yearSem = eeeFull[1] + ' Semester'; section = eeeFull[2]; }
+    }
+
+    // ECE/EIE: Sem – Section – 1
+    if (!section) {
+      const eceFull = normAll.match(/(\w+)\s+Sem\w*\s*[–\-]\s*Section\s*[–\-]\s*(\w+)/i);
+      if (eceFull) { yearSem = eceFull[1] + ' Semester'; section = eceFull[2]; }
+    }
+
+    // Civil: B.Tech VI Semester
+    if (!section) {
+      const civilFull = normAll.match(/B\.?\s*Tech\s+(\w+)\s+Semester/i);
+      if (civilFull) {
+        yearSem = civilFull[1] + ' Semester';
+        const secFull = normAll.match(/Section[-\s]*(\w+)/i);
+        section = secFull ? secFull[1] : 'A';
+      }
+    }
+
+    // DS/IT/CS: Semester (DS-1)
+    if (!section) {
+      const dsFull = normAll.match(/(\w+)\s+Semester\s*\(\s*([^)]+)\)/i);
+      if (dsFull) { yearSem = dsFull[1] + ' Semester'; section = dsFull[2].trim(); }
+    }
+
+    // Mechanical: look for "IV Sem" or "VI Sem" + section number
+    if (!section) {
+      const mechSem = normAll.match(/(\w+)\s+Sem(?:ester)?/i);
+      const mechSec = normAll.match(/Section[-–\s]*(\w+)/i);
+      if (mechSem && mechSec) {
+        yearSem = mechSem[1] + ' Semester';
+        section = mechSec[1];
+      } else if (mechSem) {
+        // Try to find a standalone number near "Sem" as section
+        const mechNum = normAll.match(/Sem\w*\s*[–\-]?\s*(\d+)/i);
+        if (mechNum) {
+          yearSem = mechSem[1] + ' Semester';
+          section = mechNum[1];
+        }
+      }
+    }
+
+    // Room from full text
+    if (!defaultRoom) {
+      const roomFull = normAll.match(/Room\s*No[.:]*\s*(\d+)/i);
+      if (roomFull) { defaultRoom = roomFull[1]; rooms.add(defaultRoom); }
     }
   }
 
