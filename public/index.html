@@ -21,6 +21,10 @@
         <label>PDF File: <input type="file" id="pdfFile" accept=".pdf" required></label>
         <button type="submit">Upload & Parse</button>
       </form>
+      <div id="uploadLoader" class="loader" style="display:none">
+        <div class="spinner"></div>
+        <span>Processing PDF… This may take a moment for large files.</span>
+      </div>
       <p id="uploadMsg" class="msg"></p>
       <div id="parsedPreview" class="preview"></div>
     </div>

@@ -11,13 +11,19 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const msg = document.getElementById('uploadMsg');
   const preview = document.getElementById('parsedPreview');
+  const loader = document.getElementById('uploadLoader');
   const form = new FormData();
   form.append('pdf', document.getElementById('pdfFile').files[0]);
+  msg.textContent = '';
+  msg.className = 'msg';
+  preview.style.display = 'none';
+  loader.style.display = 'flex';
   try {
     const res = await fetch(API + '/api/upload', { method: 'POST', body: form });
     const text = await res.text();
     let json;
-    try { json = JSON.parse(text); } catch { return showMsg(msg, 'Server error: ' + text.substring(0, 300), 'error'); }
+    try { json = JSON.parse(text); } catch { loader.style.display = 'none'; return showMsg(msg, 'Server error: ' + text.substring(0, 300), 'error'); }
+    loader.style.display = 'none';
     if (res.ok) {
       showMsg(msg, json.message, 'success');
       preview.style.display = 'block';
@@ -28,7 +34,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
       loadSlots();
       loadUploadedPdfs();
     } else showMsg(msg, json.error, 'error');
-  } catch (e) { showMsg(msg, 'Upload failed: ' + e.message, 'error'); }
+  } catch (e) { loader.style.display = 'none'; showMsg(msg, 'Upload failed: ' + e.message, 'error'); }
 });
 
 // ── Uploaded PDFs ──
