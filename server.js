@@ -310,14 +310,14 @@ function parseOnePage(items, pageNum) {
     const deptMatch = lineText.match(/DEPARTMENT\s+OF\s+(.+)/i);
     if (deptMatch && !department) { department = deptMatch[1].trim(); continue; }
 
-    // Normalize split roman numerals: "I V" → "IV", "V I" → "VI", "I I" → "II"
+    // Normalize split roman numerals: "I V" → "IV", "V I" → "VI", "I I" → "II", "V I I I" → "VIII"
     const normLine = lineText
+      .replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
+      .replace(/\bV\s+I\s+I\b/g, 'VII')
       .replace(/\bI\s+V\b/g, 'IV')
       .replace(/\bV\s+I\b/g, 'VI')
       .replace(/\bI\s+I\s+I\b/g, 'III')
       .replace(/\bI\s+I\b/g, 'II')
-      .replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
-      .replace(/\bV\s+I\s+I\b/g, 'VII')
       .replace(/Sec\s*tion/gi, 'Section');
 
     // CSE format: "IV SEMESTER [SECTION-A1]" or "IV SEMESTER [SECTION A1]"
@@ -361,11 +361,20 @@ function parseOnePage(items, pageNum) {
       continue;
     }
 
-    // Default room: "Room No: 322" or "Room No.: 2852"
-    const roomHeaderMatch = normLine.match(/Room\s*No[.:]*\s*(\d+)/i);
+    // Mechanical bracket format: "[ IV SEMESTER ]" — no section, just semester in brackets
+    const mechBracketLine = normLine.match(/\[\s*(\w+)\s+SEMESTER\s*\]/i);
+    if (mechBracketLine && !section) {
+      yearSem = mechBracketLine[1] + ' Semester';
+      const deptAbbr = department.match(/MECH/i) ? 'ME' : department.substring(0, 3).toUpperCase();
+      section = deptAbbr + '-1';
+      continue;
+    }
+
+    // Default room: "Room No: 322" or "Room No.: 2852" or "Room No: 2 702"
+    const roomHeaderMatch = normLine.match(/Room\s*No[.:]*\s*([\d\s]+\d)/i);
     if (roomHeaderMatch && !defaultRoom) {
       if (group[0].y > 590) {
-        defaultRoom = roomHeaderMatch[1];
+        defaultRoom = roomHeaderMatch[1].replace(/\s+/g, '');
         rooms.add(defaultRoom);
         continue;
       }
@@ -410,7 +419,19 @@ function parseOnePage(items, pageNum) {
       if (dsFull) { yearSem = dsFull[1] + ' Semester'; section = dsFull[2].trim(); }
     }
 
-    // Mechanical: look for "IV Sem" or "VI Sem" + section number
+    // Mechanical bracket format: "[ IV SEMESTER ]" or "[ V I SEMESTER ]"
+    // These pages have no section name — just semester inside brackets
+    if (!section) {
+      const mechBracket = normAll.match(/\[\s*(\w+)\s+SEMESTER\s*\]/i);
+      if (mechBracket) {
+        yearSem = mechBracket[1] + ' Semester';
+        // Mechanical has no section — derive from department
+        const deptAbbr = department.match(/MECH/i) ? 'ME' : department.substring(0, 3).toUpperCase();
+        section = deptAbbr + '-1';
+      }
+    }
+
+    // Generic fallback: look for "IV Sem" or "VI Sem" + section number
     if (!section) {
       const mechSem = normAll.match(/(\w+)\s+Sem(?:ester)?/i);
       const mechSec = normAll.match(/Section[-–\s]*(\w+)/i);
@@ -418,7 +439,6 @@ function parseOnePage(items, pageNum) {
         yearSem = mechSem[1] + ' Semester';
         section = mechSec[1];
       } else if (mechSem) {
-        // Try to find a standalone number near "Sem" as section
         const mechNum = normAll.match(/Sem\w*\s*[–\-]?\s*(\d+)/i);
         if (mechNum) {
           yearSem = mechSem[1] + ' Semester';
@@ -427,10 +447,22 @@ function parseOnePage(items, pageNum) {
       }
     }
 
-    // Room from full text
+    // Room from full text (handles split digits like "2 702")
     if (!defaultRoom) {
-      const roomFull = normAll.match(/Room\s*No[.:]*\s*(\d+)/i);
-      if (roomFull) { defaultRoom = roomFull[1]; rooms.add(defaultRoom); }
+      const roomFull = normAll.match(/Room\s*No[.:]*\s*([\d\s]+\d)/i);
+      if (roomFull) {
+        defaultRoom = roomFull[1].replace(/\s+/g, '');
+        rooms.add(defaultRoom);
+      }
+    }
+
+    // Handle non-numeric room names like "Project Lab"
+    if (!defaultRoom) {
+      const roomName = normAll.match(/Room\s*(?:No)?[.:]*\s*([A-Za-z]+\s*Lab)/i);
+      if (roomName) {
+        defaultRoom = roomName[1].trim();
+        rooms.add(defaultRoom);
+      }
     }
   }
 
