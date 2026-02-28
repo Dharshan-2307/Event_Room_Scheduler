@@ -260,7 +260,7 @@ function parsePdfPages(pages) {
       allSections.push(section);
     } else if (!section) {
       // Grab first few text items to help identify the format
-      const sample = items.slice(0, 20).map(i => i.t).join(' | ');
+      const sample = items.slice(0, 40).map(i => i.t).join(' | ');
       skippedPages.push({ page: p + 1, reason: 'No section header found', sample });
     } else {
       skippedPages.push({ page: p + 1, reason: '0 entries extracted', section: section.section });
@@ -270,7 +270,7 @@ function parsePdfPages(pages) {
   if (skippedPages.length > 0) {
     console.log(`\n=== SKIPPED PAGES (${skippedPages.length}) ===`);
     for (const sp of skippedPages) {
-      console.log(`  Page ${sp.page}: ${sp.reason}${sp.sample ? '\n    Sample: ' + sp.sample.substring(0, 200) : ''}`);
+      console.log(`  Page ${sp.page}: ${sp.reason}${sp.sample ? '\n    Sample: ' + sp.sample.substring(0, 400) : ''}`);
     }
     console.log('=== END SKIPPED ===\n');
   }
@@ -299,26 +299,70 @@ function parseOnePage(items, pageNum) {
     const deptMatch = lineText.match(/DEPARTMENT\s+OF\s+(.+)/i);
     if (deptMatch) { department = deptMatch[1].trim(); continue; }
 
+    // Normalize split roman numerals: "I V" → "IV", "V I" → "VI", "I I" → "II"
+    const normLine = lineText
+      .replace(/\bI\s+V\b/g, 'IV')
+      .replace(/\bV\s+I\b/g, 'VI')
+      .replace(/\bI\s+I\s+I\b/g, 'III')
+      .replace(/\bI\s+I\b/g, 'II')
+      .replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
+      .replace(/\bV\s+I\s+I\b/g, 'VII');
+
     // CSE format: "IV SEMESTER [SECTION-A1]" or "IV SEMESTER [SECTION A1]"
-    const cseMatch = lineText.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
+    const cseMatch = normLine.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
     if (cseMatch) {
       yearSem = cseMatch[1] + ' Semester';
       section = cseMatch[2];
       continue;
     }
 
-    // DS format: "IV Semester (DS-1)" or "IV Semester ( IT )"
-    // After merge, line looks like "IV Semester (DS-1)" or "IV Semester (IT)"
-    const dsMatch = lineText.match(/I\s*V\s+Semester\s*\(([^)]+)\)/i);
-    if (dsMatch) {
-      yearSem = 'IV Semester';
-      section = dsMatch[1].trim();
+    // EEE format: "VI SEMESTER (SECTION - 01)" or "IV SEMESTER (SECTION-01)"
+    const eeeMatch = normLine.match(/(\w+)\s+SEMESTER\s*\(SECTION[-\s]*(\w+)\)/i);
+    if (eeeMatch) {
+      yearSem = eeeMatch[1] + ' Semester';
+      section = eeeMatch[2];
       continue;
     }
 
-    // Default room: "Room No: 322" or "Room No.: 2852"
+    // ECE/EIE format: "IV Sem – Section – 1" or "VI Sem - Section - 2"
+    const eceMatch = normLine.match(/(\w+)\s+Sem\w*\s*[–\-]\s*Sec\s*tion\s*[–\-]\s*(\w+)/i);
+    if (eceMatch) {
+      yearSem = eceMatch[1] + ' Semester';
+      section = eceMatch[2];
+      continue;
+    }
+
+    // Civil format: "B.Tech VI Semester" (section may be on same or different line)
+    const civilMatch = normLine.match(/B\.?\s*Tech\s+(\w+)\s+Semester/i);
+    if (civilMatch && !yearSem) {
+      yearSem = civilMatch[1] + ' Semester';
+      // Section might be embedded like "(Section-1)" or "Section 1" on same line
+      const secInLine = normLine.match(/Section[-\s]*(\w+)/i);
+      if (secInLine) section = secInLine[1];
+      else section = 'A'; // fallback
+      continue;
+    }
+
+    // DS/IT/CS format: "IV Semester (DS-1)" or "VI Semester ( IT )" or "VI Semester (CS-2)"
+    const dsMatch = normLine.match(/(\w+)\s+Semester\s*\(\s*([^)]+)\)/i);
+    if (dsMatch) {
+      yearSem = dsMatch[1] + ' Semester';
+      section = dsMatch[1].trim() !== dsMatch[1] ? dsMatch[2].trim() : dsMatch[2].trim();
+      section = dsMatch[2].trim();
+      continue;
+    }
+
+    // Mechanical format: "TIME – TABLE" with section info like "IV Sem" elsewhere
+    // Try to catch semester from lines like "IV Sem" standalone
+    const semOnly = normLine.match(/^(\w+)\s+Sem(?:ester)?\s*$/i);
+    if (semOnly && !yearSem) {
+      yearSem = semOnly[1] + ' Semester';
+      continue;
+    }
+
+    // Default room: "Room No: 322" or "Room No.: 2852" or "Room No: 20 8" (split)
     // Only in header area (high Y = top of page, above day rows)
-    const roomHeaderMatch = lineText.match(/Room\s*No[.:]+\s*(\d+)/i);
+    const roomHeaderMatch = normLine.match(/Room\s*No[.:]*\s*(\d+)/i);
     if (roomHeaderMatch && !defaultRoom) {
       // Header area: Y > 590 for CSE, Y > 640 for DS — use 590 as threshold
       if (group[0].y > 590) {
