@@ -123,7 +123,7 @@ app.post('/api/upload', upload.single('pdf'), async (req, res) => {
           const r = insertRoom.run(room, /lab/i.test(room) ? 'lab' : 'classroom');
           if (r.changes) totalRooms++;
         }
-        const tt = insertTimetable.run(sec.department, sec.year_sem, sec.section, sec.default_room, req.file.originalname, req.file.path);
+        const tt = insertTimetable.run(sec.department, sec.year_sem, sec.section, sec.default_room, req.file.originalname, '');
         const ttId = Number(tt.lastInsertRowid);
         for (const e of sec.entries) {
           insertSchedule.run(ttId, e.day, e.time_slot, e.room_number, e.subject);
@@ -131,6 +131,9 @@ app.post('/api/upload', upload.single('pdf'), async (req, res) => {
         }
       }
     })();
+
+    // Clean up uploaded file — data is in DB now
+    try { fs.unlinkSync(req.file.path); } catch {}
 
     console.log(`Parsed: ${sections.length} sections, ${totalEntries} entries, ${totalRooms} new rooms, ${skippedCount} pages skipped`);
     return res.json({
