@@ -115,6 +115,7 @@ app.post('/api/upload', upload.single('pdf'), async (req, res) => {
     const sections = parsePdfPages(pages);
     let totalEntries = 0;
     let totalRooms = 0;
+    const skippedCount = pages.length - sections.length;
 
     db.transaction(() => {
       for (const sec of sections) {
@@ -131,9 +132,9 @@ app.post('/api/upload', upload.single('pdf'), async (req, res) => {
       }
     })();
 
-    console.log(`Parsed: ${sections.length} sections, ${totalEntries} entries, ${totalRooms} new rooms`);
+    console.log(`Parsed: ${sections.length} sections, ${totalEntries} entries, ${totalRooms} new rooms, ${skippedCount} pages skipped`);
     return res.json({
-      message: `Parsed ${sections.length} section(s): ${totalEntries} schedule entries, ${totalRooms} new rooms`,
+      message: `Parsed ${sections.length} section(s) from ${pages.length} pages: ${totalEntries} schedule entries, ${totalRooms} new rooms. ${skippedCount} page(s) skipped.`,
       sections: sections.map(s => ({ department: s.department, year_sem: s.year_sem, section: s.section, default_room: s.default_room, entries: s.entries.length })),
       total_entries: totalEntries,
       total_rooms: totalRooms
@@ -240,21 +241,44 @@ const SKIP_WORDS = new Set(['B','R','E','A','K','L','U','N','C','H','BREAK','LUN
 
 function parsePdfPages(pages) {
   const allSections = [];
+  const skippedPages = [];
 
-  for (const pageText of pages) {
+  for (let p = 0; p < pages.length; p++) {
     let items;
-    try { items = JSON.parse(pageText); } catch { continue; }
-    if (!items.length) continue;
+    try { items = JSON.parse(pages[p]); } catch { 
+      skippedPages.push({ page: p + 1, reason: 'JSON parse failed' });
+      continue; 
+    }
+    if (!items.length) {
+      skippedPages.push({ page: p + 1, reason: 'Empty page' });
+      continue;
+    }
 
-    const section = parseOnePage(items);
+    const section = parseOnePage(items, p + 1);
     if (section && section.entries.length > 0) {
+      section.pageNum = p + 1;
       allSections.push(section);
+    } else if (!section) {
+      // Grab first few text items to help identify the format
+      const sample = items.slice(0, 20).map(i => i.t).join(' | ');
+      skippedPages.push({ page: p + 1, reason: 'No section header found', sample });
+    } else {
+      skippedPages.push({ page: p + 1, reason: '0 entries extracted', section: section.section });
     }
   }
+
+  if (skippedPages.length > 0) {
+    console.log(`\n=== SKIPPED PAGES (${skippedPages.length}) ===`);
+    for (const sp of skippedPages) {
+      console.log(`  Page ${sp.page}: ${sp.reason}${sp.sample ? '\n    Sample: ' + sp.sample.substring(0, 200) : ''}`);
+    }
+    console.log('=== END SKIPPED ===\n');
+  }
+
   return allSections;
 }
 
-function parseOnePage(items) {
+function parseOnePage(items, pageNum) {
   // ── Step 1: Extract header info (department, semester, section, default room) ──
   let department = '', yearSem = '', section = '', defaultRoom = '';
   const rooms = new Set();
