@@ -185,7 +185,7 @@ app.get('/api/free-rooms', (req, res) => {
   const toMin = timeToMinutes(to);
 
   // Find all time slots that overlap with the requested range
-  const allSlots = TIME_SLOTS;
+  const allSlots = db.prepare('SELECT DISTINCT time_slot FROM schedules').all().map(r => r.time_slot);
   const overlapping = allSlots.filter(slot => {
     const [start, end] = slot.split('-');
     const slotStart = timeToMinutes(start);
@@ -483,22 +483,28 @@ function parseOnePage(items, pageNum) {
 
   if (!section) return null;
 
-  // ── Step 2: Determine column boundaries from time header positions ──
-  // Find time header items (09:00, 09:55, 11:10, etc.)
+  // ── Step 2: Determine column boundaries and extract actual time slots ──
+  // Find time header items (09:00, 09:55, 11:10, etc.) — also handle 9.00, 10.00 formats
   const timeHeaderItems = items.filter(i =>
-    /^(09|10|11|12|01|02|03|04)[.:]\d{2}/.test(i.t) && i.y > 640
+    /^(09|9|10|11|12|01|1|02|2|03|3|04|4)[.:]\d{2}/.test(i.t) && i.y > 640
   );
 
   let colBoundaries;
+  let pageTimeSlots; // Will hold the actual time slots for this page
+
   if (timeHeaderItems.length >= 4) {
-    colBoundaries = computeColumnBoundaries(timeHeaderItems);
-  } else {
+    const result = computeColumnBoundariesWithSlots(timeHeaderItems);
+    colBoundaries = result ? result.boundaries : null;
+    pageTimeSlots = result ? result.slots : null;
+  }
+
+  if (!colBoundaries) {
     // Fallback: use BREAK/LUNCH column positions to infer boundaries
     colBoundaries = inferColumnBoundaries(items);
   }
 
   if (!colBoundaries) {
-    // Last resort: hardcoded boundaries that work for both CSE and DS
+    // Last resort: hardcoded boundaries
     colBoundaries = [
       { left: 95, right: 170 },   // Slot 1
       { left: 170, right: 237 },  // Slot 2
@@ -507,6 +513,11 @@ function parseOnePage(items, pageNum) {
       { left: 410, right: 475 },  // Slot 5
       { left: 475, right: 550 },  // Slot 6
     ];
+  }
+
+  // If we couldn't extract real time slots, fall back to hardcoded
+  if (!pageTimeSlots || pageTimeSlots.length !== colBoundaries.length) {
+    pageTimeSlots = TIME_SLOTS.slice(0, colBoundaries.length);
   }
 
   // ── Step 3: Find day rows and extract schedule entries ──
@@ -533,7 +544,8 @@ function parseOnePage(items, pageNum) {
     extendedRowItems = mergeAdjacentItems(extendedRowItems);
 
     // Assign each item to a column slot
-    const slotData = [null, null, null, null, null, null]; // 6 slots
+    const numSlots = colBoundaries.length;
+    const slotData = new Array(numSlots).fill(null);
 
     for (const item of extendedRowItems) {
       // Skip BREAK/LUNCH letters and day names
@@ -593,7 +605,7 @@ function parseOnePage(items, pageNum) {
     // LAB subjects span 2 consecutive slots. In the PDF, the merged cell
     // places the text in the first column. The second column is empty.
     // We detect LAB subjects and duplicate them into the next slot.
-    for (let s = 0; s < 6; s++) {
+    for (let s = 0; s < numSlots; s++) {
       const sd = slotData[s];
       if (!sd || sd.subjects.length === 0) continue;
       if (sd.subjects[0] === '_FILLED_') continue; // Already filled by LAB span
@@ -607,18 +619,18 @@ function parseOnePage(items, pageNum) {
 
       entries.push({
         day: dayName,
-        time_slot: TIME_SLOTS[s],
+        time_slot: pageTimeSlots[s] || TIME_SLOTS[s] || `slot-${s+1}`,
         room_number: roomNum,
         subject: subjectName
       });
 
       // If it's a 2-hour subject and the next slot is empty, fill it too
-      if (is2Hour && s + 1 < 6 && (!slotData[s + 1] || slotData[s + 1].subjects.length === 0)) {
+      if (is2Hour && s + 1 < numSlots && (!slotData[s + 1] || slotData[s + 1].subjects.length === 0)) {
         // Also check if next slot has a room override we should use
         const nextRoom = (slotData[s + 1] && slotData[s + 1].roomOverride) || roomNum;
         entries.push({
           day: dayName,
-          time_slot: TIME_SLOTS[s + 1],
+          time_slot: pageTimeSlots[s + 1] || TIME_SLOTS[s + 1] || `slot-${s+2}`,
           room_number: nextRoom,
           subject: subjectName
         });
@@ -683,31 +695,62 @@ function groupByY(items, tolerance) {
   return groups;
 }
 
-// Compute column boundaries from time header X positions
-function computeColumnBoundaries(timeHeaders) {
-  // Group time headers by X proximity to find 6 column left edges
-  const leftEdges = [];
-  const sorted = [...timeHeaders].sort((a, b) => a.x - b.x);
+// Compute column boundaries AND extract actual time slot labels from time header positions
+function computeColumnBoundariesWithSlots(timeHeaders) {
+  // Normalize time text: "9.00" → "09:00", "1.00" → "01:00"
+  const normalized = timeHeaders.map(th => {
+    let t = th.t.replace('.', ':');
+    // Pad single-digit hours: "9:00" → "09:00"
+    if (/^\d:/.test(t)) t = '0' + t;
+    return { ...th, t, origT: th.t };
+  });
 
+  // Sort by X position
+  const sorted = [...normalized].sort((a, b) => a.x - b.x);
+
+  // Group time headers into columns by X proximity
+  const columns = []; // Each column: { x, times: ['09:00', '09:55'] }
   for (const th of sorted) {
-    const existing = leftEdges.find(c => Math.abs(c - th.x) < 40);
-    if (!existing) leftEdges.push(th.x);
+    const existing = columns.find(c => Math.abs(c.x - th.x) < 40);
+    if (existing) {
+      existing.times.push(th.t);
+    } else {
+      columns.push({ x: th.x, times: [th.t] });
+    }
   }
-  leftEdges.sort((a, b) => a - b);
+  columns.sort((a, b) => a.x - b.x);
 
-  if (leftEdges.length < 6) return null;
+  if (columns.length < 6) return null;
 
-  const cols = leftEdges.slice(0, 6);
+  // Each column has 2 times: start and end (from the "HH:MM To HH:MM" header)
+  // Build slot labels: "start-end" for each column
+  const slots = [];
+  const cols = columns.slice(0, columns.length);
 
-  // Each column spans from its left edge to just before the next column's left edge
-  // Add margin before first column and after last column
+  // Determine actual slot count — typically 6, but could vary
+  // Each column's times array has the start time at index 0 and end time at index 1
+  for (let i = 0; i < cols.length; i++) {
+    const times = cols[i].times.sort(); // Sort to get start before end
+    if (times.length >= 2) {
+      slots.push(times[0] + '-' + times[1]);
+    } else if (times.length === 1 && i + 1 < cols.length) {
+      // Single time — use it as start, next column's first time as end
+      const nextStart = cols[i + 1].times.sort()[0];
+      slots.push(times[0] + '-' + nextStart);
+    } else {
+      slots.push(times[0] + '-' + times[0]);
+    }
+  }
+
+  // Build boundaries
   const boundaries = [];
-  for (let i = 0; i < 6; i++) {
-    const left = i === 0 ? cols[i] - 25 : cols[i] - 10;
-    const right = i < 5 ? cols[i + 1] - 11 : cols[i] + 50;
+  for (let i = 0; i < cols.length; i++) {
+    const left = i === 0 ? cols[i].x - 25 : cols[i].x - 10;
+    const right = i < cols.length - 1 ? cols[i + 1].x - 11 : cols[i].x + 50;
     boundaries.push({ left, right });
   }
-  return boundaries;
+
+  return { boundaries, slots };
 }
 
 // Infer column boundaries from BREAK/LUNCH positions
