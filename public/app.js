@@ -24,7 +24,6 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
       preview.textContent = json.sections.map(s =>
         `${s.department} | ${s.year_sem} | Section ${s.section} | Room ${s.default_room} | ${s.entries} entries`
       ).join('\n');
-      loadRooms();
       loadTimetables();
       loadSlots();
       loadUploadedPdfs();
@@ -55,19 +54,8 @@ async function deletePdf(filename) {
   await fetch(API + '/api/uploads/' + filename, { method: 'DELETE' });
   loadUploadedPdfs();
   loadTimetables();
-  loadRooms();
   loadSlots();
 }
-
-// ── Rooms ──
-async function loadRooms() {
-  const rooms = await (await fetch(API + '/api/rooms')).json();
-  document.querySelector('#roomsTable tbody').innerHTML = rooms.length ? rooms.map(r => `
-    <tr><td>${r.room_number}</td><td>${r.room_type}</td>
-    <td><button class="danger" onclick="deleteRoom(${r.id})">Delete</button></td></tr>`).join('')
-    : '<tr><td colspan="3" style="text-align:center;color:#999">No rooms yet.</td></tr>';
-}
-async function deleteRoom(id) { await fetch(API + '/api/rooms/' + id, { method: 'DELETE' }); loadRooms(); }
 
 // ── Timetables ──
 async function loadTimetables() {
@@ -164,7 +152,6 @@ async function findFreeRooms() {
   }
 }
 
-loadRooms();
 loadTimetables();
 loadSlots();
 loadUploadedPdfs();

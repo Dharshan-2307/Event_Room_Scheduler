@@ -59,6 +59,30 @@ const insertRoom = db.prepare('INSERT OR IGNORE INTO rooms (room_number, room_ty
 const insertTimetable = db.prepare('INSERT INTO timetables (department, year_sem, section, default_room, filename, filepath) VALUES (?, ?, ?, ?, ?, ?)');
 const insertSchedule = db.prepare('INSERT INTO schedules (timetable_id, day, time_slot, room_number, subject) VALUES (?, ?, ?, ?, ?)');
 
+// ── Pre-seed all known event rooms ──
+const ALL_ROOMS = [
+  '101','106','120','125','126','128','129','131','132','133','134',
+  '201','207','208','222','224','229','233',
+  '301','302','311','321','322','323','324','327','328','330','331','332',
+  '503','504','519',
+  '603','605','606','609','610','611','612','618',
+  '703','704','705','706','709','710','711','712','715','718',
+  '802','803','817','818','824','825',
+  '1805',
+  '2003','2010','2011','2052',
+  '2303','2406','2407','2452','2453','2456',
+  '2603','2702','2703','2706','2802','2852','2853',
+  '4001','4002','4003','4004','4101','4102','4103',
+  '4200','4201','4202','4203','4204','4215','4216','4217','4218','4219','4221',
+  '4300','4301','4302','4303','4304','4315','4316','4317','4318','4319','4320','4321','4324',
+  '4416','4417','4418','4419'
+];
+db.transaction(() => {
+  for (const room of ALL_ROOMS) {
+    insertRoom.run(room, 'classroom');
+  }
+})();
+
 // ── Custom page renderer for position-aware text extraction ──
 function positionPageRender(pageData) {
   return pageData.getTextContent({ normalizeWhitespace: false }).then(function(textContent) {
@@ -121,10 +145,6 @@ app.post('/api/upload', upload.single('pdf'), async (req, res) => {
 });
 
 app.get('/api/rooms', (req, res) => res.json(db.prepare('SELECT * FROM rooms').all()));
-app.delete('/api/rooms/:id', (req, res) => {
-  db.prepare('DELETE FROM rooms WHERE id = ?').run(req.params.id);
-  res.json({ message: 'Deleted' });
-});
 
 app.get('/api/timetables', (req, res) => {
   res.json(db.prepare('SELECT id, department, year_sem, section, default_room, filename, uploaded_at FROM timetables').all());
