@@ -291,7 +291,12 @@ function normalizeRoman(text) {
     // II: "I I"
     .replace(/\bI\s+I\b/g, 'II')
     // Fix split words
-    .replace(/Sec\s*tion/gi, 'Section');
+    .replace(/Sec\s*tion/gi, 'Section')
+    // OCR artifacts
+    .replace(/B\.?\s*Te\s*c\s*h/gi, 'B.Tech')
+    .replace(/Semeste\s*r/gi, 'Semester')
+    .replace(/ACADEM\s*I\s*C/gi, 'ACADEMIC')
+    .replace(/ENGINEER\s*ING/gi, 'ENGINEERING');
 }
 
 function parseOnePage(items, pageNum) {
@@ -345,12 +350,17 @@ function parseOnePage(items, pageNum) {
       continue;
     }
 
-    // Civil format: "B.Tech VI Semester" (section may be on same or different line)
+    // Civil format: "B.Tech VI Semester" or "B.Tech IV Semester [CE]"
     const civilMatch = normLine.match(/B\.?\s*Tech\s+(\w+)\s+Semester/i);
     if (civilMatch && !yearSem) {
       yearSem = civilMatch[1] + ' Semester';
       const secInLine = normLine.match(/Section[-\s]*(\w+)/i);
-      if (secInLine) section = secInLine[1];
+      if (secInLine) { section = secInLine[1]; }
+      else {
+        // Bracket section like [CE] or [CE-1]
+        const bracketSec = normLine.match(/Semester\s*\[([^\]]+)\]/i);
+        if (bracketSec) section = bracketSec[1].trim();
+      }
       continue;
     }
 
@@ -404,13 +414,17 @@ function parseOnePage(items, pageNum) {
       if (eceFull) { yearSem = eceFull[1] + ' Semester'; section = eceFull[2]; }
     }
 
-    // Civil: B.Tech VI Semester
+    // Civil: B.Tech VI Semester or B.Tech IV Semester [CE]
     if (!section) {
       const civilFull = normAll.match(/B\.?\s*Tech\s+(\w+)\s+Semester/i);
       if (civilFull) {
         yearSem = civilFull[1] + ' Semester';
         const secFull = normAll.match(/Section[-\s]*(\w+)/i);
-        section = secFull ? secFull[1] : 'A';
+        if (secFull) { section = secFull[1]; }
+        else {
+          const bracketSec = normAll.match(/Semester\s*\[([^\]]+)\]/i);
+          section = bracketSec ? bracketSec[1].trim() : 'A';
+        }
       }
     }
 
