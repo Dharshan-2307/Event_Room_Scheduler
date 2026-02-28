@@ -281,6 +281,33 @@ function parsePdfPages(pages) {
   return allSections;
 }
 
+// Normalize split/fragmented roman numerals and common word splits
+function normalizeRoman(text) {
+  return text
+    // VIII variants: "V I I I", "V II I", "V III", "VI I I", "VI II"
+    .replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
+    .replace(/\bV\s+II\s+I\b/g, 'VIII')
+    .replace(/\bV\s+III\b/g, 'VIII')
+    .replace(/\bVI\s+I\s+I\b/g, 'VIII')
+    .replace(/\bVI\s+II\b/g, 'VIII')
+    // VII variants: "V I I", "V II", "VI I"
+    .replace(/\bV\s+I\s+I\b/g, 'VII')
+    .replace(/\bV\s+II\b/g, 'VII')
+    .replace(/\bVI\s+I\b/g, 'VII')
+    // IV: "I V"
+    .replace(/\bI\s+V\b/g, 'IV')
+    // VI: "V I"
+    .replace(/\bV\s+I\b/g, 'VI')
+    // III: "I I I", "II I", "I II"
+    .replace(/\bI\s+I\s+I\b/g, 'III')
+    .replace(/\bII\s+I\b/g, 'III')
+    .replace(/\bI\s+II\b/g, 'III')
+    // II: "I I"
+    .replace(/\bI\s+I\b/g, 'II')
+    // Fix split words
+    .replace(/Sec\s*tion/gi, 'Section');
+}
+
 function parseOnePage(items, pageNum) {
   // ── Step 1: Extract header info (department, semester, section, default room) ──
   let department = '', yearSem = '', section = '', defaultRoom = '';
@@ -295,11 +322,7 @@ function parseOnePage(items, pageNum) {
 
   // Also build full page text for fallback matching (handles split fragments across Y-groups)
   const allText = items.map(i => i.t).join(' ');
-  const normAll = allText
-    .replace(/\bI\s+V\b/g, 'IV').replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
-    .replace(/\bV\s+I\s+I\b/g, 'VII').replace(/\bV\s+I\b/g, 'VI')
-    .replace(/\bI\s+I\s+I\b/g, 'III').replace(/\bI\s+I\b/g, 'II')
-    .replace(/Sec\s*tion/gi, 'Section');
+  const normAll = normalizeRoman(allText);
 
   for (const group of yGroups) {
     // Merge adjacent fragments within the group (e.g., "285" + "2" → "2852")
@@ -310,15 +333,7 @@ function parseOnePage(items, pageNum) {
     const deptMatch = lineText.match(/DEPARTMENT\s+OF\s+(.+)/i);
     if (deptMatch && !department) { department = deptMatch[1].trim(); continue; }
 
-    // Normalize split roman numerals: "I V" → "IV", "V I" → "VI", "I I" → "II", "V I I I" → "VIII"
-    const normLine = lineText
-      .replace(/\bV\s+I\s+I\s+I\b/g, 'VIII')
-      .replace(/\bV\s+I\s+I\b/g, 'VII')
-      .replace(/\bI\s+V\b/g, 'IV')
-      .replace(/\bV\s+I\b/g, 'VI')
-      .replace(/\bI\s+I\s+I\b/g, 'III')
-      .replace(/\bI\s+I\b/g, 'II')
-      .replace(/Sec\s*tion/gi, 'Section');
+    const normLine = normalizeRoman(lineText);
 
     // CSE format: "IV SEMESTER [SECTION-A1]" or "IV SEMESTER [SECTION A1]"
     const cseMatch = normLine.match(/(\w+)\s+SEMESTER\s*\[SECTION[-\s]*(\w+)\]/i);
